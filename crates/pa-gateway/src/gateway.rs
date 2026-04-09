@@ -10,6 +10,8 @@ use pa_agent::Agent;
 use crate::server::GatewayServer;
 use crate::client::ClientRegistry;
 use crate::events::EventBus;
+use crate::alert::AlertManager;
+use crate::watchdog::{Watchdog, WatchdogConfig};
 
 /// Gateway 实例
 pub struct Gateway {
@@ -22,6 +24,10 @@ pub struct Gateway {
     task_manager: Arc<TaskManager>,
     /// Agent 实例映射表（并发安全的 Agent 管理）
     agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
+    /// 告警管理器
+    alert_manager: Option<Arc<AlertManager>>,
+    /// Watchdog 配置
+    watchdog_config: Option<WatchdogConfig>,
 }
 
 impl Gateway {
@@ -46,6 +52,8 @@ impl Gateway {
             agents: HashMap::new(),
             task_manager,
             agents_map: Arc::new(RwLock::new(HashMap::new())),
+            alert_manager: None,
+            watchdog_config: None,
         })
     }
 
@@ -69,7 +77,26 @@ impl Gateway {
             agents: HashMap::new(),
             task_manager,
             agents_map: Arc::new(RwLock::new(HashMap::new())),
+            alert_manager: None,
+            watchdog_config: None,
         })
+    }
+
+    /// 设置 Watchdog 配置
+    pub fn with_watchdog_config(mut self, config: WatchdogConfig) -> Self {
+        self.watchdog_config = Some(config);
+        self
+    }
+
+    /// 设置告警管理器
+    pub fn with_alert_manager(mut self, manager: AlertManager) -> Self {
+        self.alert_manager = Some(Arc::new(manager));
+        self
+    }
+
+    /// 获取告警管理器引用
+    pub fn alert_manager(&self) -> Option<&Arc<AlertManager>> {
+        self.alert_manager.as_ref()
     }
 
     /// 启动 Gateway
@@ -87,6 +114,18 @@ impl Gateway {
         );
 
         self.server = Some(server);
+
+        // 启动 Watchdog
+        if let Some(ref config) = self.watchdog_config {
+            if config.enabled {
+                let watchdog = Watchdog::new(
+                    config.clone(),
+                    self.task_manager.clone(),
+                    self.agents_map.clone(),
+                );
+                watchdog.spawn();
+            }
+        }
 
         // 阻塞运行
         if let Some(ref mut server) = self.server {
@@ -118,7 +157,12 @@ impl Gateway {
     pub async fn register_agent_instance(&self, agent: Agent) {
         let agent_id = agent.id().as_str().to_string();
         tracing::info!("注册 Agent 实例: {}", agent_id);
-        self.agents_map.write().await.insert(agent_id, Arc::new(RwLock::new(agent)));
+        self.agents_map.write().await.insert(agent_id.clone(), Arc::new(RwLock::new(agent)));
+
+        // 发布配置更新事件
+        self.event_bus.publish(pa_core::GatewayEvent::ConfigUpdated {
+            key: format!("agent_registered:{}", agent_id),
+        });
     }
 
     /// 获取 Agent 实例

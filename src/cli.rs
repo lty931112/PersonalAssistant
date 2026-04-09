@@ -11,6 +11,7 @@
 //! - `--permission-mode <mode>` - 覆盖权限模式
 //! - `--enable-mcp` - 启用 MCP 工具
 //! - `--enable-feishu` - 启用飞书通道
+//! - `--daemon` - 以守护进程模式运行
 
 use std::path::PathBuf;
 
@@ -33,6 +34,8 @@ pub struct Config {
     pub enable_mcp: bool,
     /// 是否启用飞书通道
     pub enable_feishu: bool,
+    /// 是否以守护进程模式运行
+    pub daemon: bool,
 }
 
 /// CLI 命令枚举
@@ -60,6 +63,7 @@ pub fn parse_args() -> Config {
     let mut permission_mode = None;
     let mut enable_mcp = false;
     let mut enable_feishu = false;
+    let mut daemon = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -111,6 +115,7 @@ pub fn parse_args() -> Config {
             }
             "--enable-mcp" => enable_mcp = true,
             "--enable-feishu" => enable_feishu = true,
+            "--daemon" => daemon = true,
 
             // 未知参数
             unknown => {
@@ -129,5 +134,6 @@ pub fn parse_args() -> Config {
         permission_mode,
         enable_mcp,
         enable_feishu,
+        daemon,
     }
 }

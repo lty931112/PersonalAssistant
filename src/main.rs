@@ -8,6 +8,7 @@
 //! - 提供服务启动和单次查询两种运行模式
 
 mod cli;
+mod daemon;
 
 use std::sync::Arc;
 use std::path::Path;
@@ -265,6 +266,48 @@ async fn init_task_store(db_path: &Path) -> Result<TaskStore> {
 // start_server - 启动 Gateway 服务
 // ============================================================
 
+/// 创建多信号监听器
+///
+/// 同时监听 SIGINT (Ctrl+C) 和 SIGTERM (kill) 信号，
+/// 任一信号触发时通过 channel 通知主循环进行优雅关闭。
+fn create_shutdown_signal() -> tokio::sync::watch::Receiver<bool> {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // 监听 SIGINT (Ctrl+C)
+    let sigint_tx = shutdown_tx.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("收到 SIGINT (Ctrl+C) 信号");
+        let _ = sigint_tx.send(true);
+    });
+
+    // 监听 SIGTERM (kill 命令)
+    let sigterm_tx = shutdown_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut signals = signal_hook::iterator::Signals::new(&[
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGHUP,
+        ])
+        .expect("无法注册信号处理器");
+
+        for sig in signals.forever() {
+            match sig {
+                signal_hook::consts::SIGTERM => {
+                    info!("收到 SIGTERM 信号");
+                    let _ = sigterm_tx.send(true);
+                    break;
+                }
+                signal_hook::consts::SIGHUP => {
+                    info!("收到 SIGHUP 信号（忽略）");
+                }
+                _ => {}
+            }
+        }
+    });
+
+    shutdown_rx
+}
+
 /// 启动 Gateway 服务器
 ///
 /// 完整的启动流程：
@@ -282,6 +325,17 @@ async fn init_task_store(db_path: &Path) -> Result<TaskStore> {
 /// 12. 启动 Gateway 服务器
 /// 13. 处理 Ctrl+C 优雅关闭
 async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
+    // 0. 守护进程化（如果启用）
+    if cli.daemon {
+        info!("以守护进程模式启动...");
+        let daemon_config = daemon::DaemonConfig::default();
+        daemon::daemonize(&daemon_config)
+            .map_err(|e| anyhow::anyhow!("守护进程化失败: {}", e))?;
+        // 守护进程化后重新初始化日志（文件描述符已重定向）
+        init_tracing(cli.verbose);
+        info!("守护进程已启动");
+    }
+
     info!("=== 启动 PersonalAssistant Gateway 服务 ===");
 
     // 1. 创建 TaskStore
@@ -347,6 +401,13 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("创建 Gateway 失败: {}", e))?;
 
+    // 9.5 初始化告警管理器
+    if settings.alert.enabled {
+        let alert_manager = pa_gateway::AlertManager::new(settings.alert.clone());
+        gateway = gateway.with_alert_manager(alert_manager);
+        info!("告警管理器已初始化，渠道: {}", settings.alert.channel);
+    }
+
     // 10. 注册 Agent 到 Gateway
     gateway.register_agent_instance(agent).await;
     info!("Agent 已注册到 Gateway");
@@ -364,10 +425,13 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
         }
     }
 
-    // 12 & 13. 启动 Gateway 服务器 + Ctrl+C 优雅关闭
+    // 12 & 13. 启动 Gateway 服务器 + 信号处理优雅关闭
     info!("正在启动 Gateway 服务器...");
 
-    // 在后台启动 Gateway，同时监听 Ctrl+C
+    // 创建 shutdown 信号
+    let mut shutdown_rx = create_shutdown_signal();
+
+    // 在后台启动 Gateway，同时监听多种终止信号
     tokio::select! {
         result = gateway.start() => {
             match result {
@@ -380,9 +444,17 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
                 }
             }
         }
-        _ = tokio::signal::ctrl_c() => {
-            info!("收到 Ctrl+C 信号，正在优雅关闭...");
-            // Gateway 的 drop 会自动清理资源
+        _ = async {
+            let mut rx = shutdown_rx;
+            while !*rx.borrow_and_update() {
+                rx.changed().await.ok();
+            }
+        } => {
+            info!("收到终止信号，正在优雅关闭...");
+            // 清理 PID 文件（如果是守护进程模式）
+            if cli.daemon {
+                daemon::cleanup_pid_file(".pa/personal-assistant.pid");
+            }
         }
     }
 

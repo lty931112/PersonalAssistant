@@ -729,6 +729,20 @@ impl TaskStore {
         info!("已清理 {} 个旧任务", result);
         Ok(result)
     }
+
+    /// 数据库健康检查
+    ///
+    /// 执行简单的查询来验证数据库连接是否正常。
+    pub async fn check_health(&self) -> Result<(), CoreError> {
+        self.conn
+            .call(|conn| {
+                conn.execute_batch("SELECT 1;")?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| CoreError::Internal(format!("数据库健康检查失败: {}", e)))?;
+        Ok(())
+    }
 }
 
 // ============================================================================

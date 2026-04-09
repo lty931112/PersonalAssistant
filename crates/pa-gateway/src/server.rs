@@ -16,14 +16,15 @@ use axum::{
 };
 use tower_http::cors::CorsLayer;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
-use pa_core::{CoreError, AgentId};
+use serde_json::json;
+use pa_core::CoreError;
 use pa_config::Settings;
 use pa_task::TaskManager;
 use pa_agent::Agent;
 use crate::client::ClientRegistry;
 use crate::events::EventBus;
 use crate::protocol::{MethodCall, MethodResponse};
+use crate::metrics::MetricsCollector;
 
 /// 应用共享状态
 #[derive(Clone)]
@@ -38,6 +39,8 @@ pub struct AppState {
     pub task_manager: Arc<TaskManager>,
     /// Agent 实例映射表
     pub agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
+    /// 指标收集器
+    pub metrics: Arc<MetricsCollector>,
 }
 
 /// Gateway 服务器
@@ -63,6 +66,7 @@ impl GatewayServer {
                 settings,
                 task_manager,
                 agents_map,
+                metrics: Arc::new(MetricsCollector::new()),
             },
         }
     }
@@ -75,6 +79,8 @@ impl GatewayServer {
             .route("/ws", get(ws_handler))
             // 健康检查
             .route("/health", get(health_handler))
+            // Prometheus 指标
+            .route("/metrics", get(metrics_handler))
             // 任务管理 API
             .route("/api/tasks", get(list_tasks_handler))
             .route("/api/tasks/:id", get(get_task_handler))
@@ -107,12 +113,89 @@ impl GatewayServer {
 // HTTP REST API 处理函数
 // ============================================================================
 
-/// 健康检查
-async fn health_handler() -> impl IntoResponse {
-    Json(json!({
-        "status": "ok",
-        "version": env!("CARGO_PKG_VERSION"),
-    }))
+/// 深度健康检查
+///
+/// 检查以下组件状态：
+/// - 系统基本信息（版本、运行时间）
+/// - SQLite 数据库连接
+/// - Agent 状态
+/// - WebSocket 客户端连接数
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let start_time = std::time::Instant::now();
+
+    // 检查 Agent 状态
+    let agents = state.agents_map.read().await;
+    let mut agent_health = Vec::new();
+    let mut all_healthy = true;
+
+    for (id, agent) in agents.iter() {
+        let status = agent.read().await.get_status().await;
+        let is_healthy = status.state == "idle" || status.state == "running";
+        if !is_healthy {
+            all_healthy = false;
+        }
+        agent_health.push(serde_json::json!({
+            "id": id,
+            "state": status.state,
+            "healthy": is_healthy,
+            "completed_tasks": status.completed_tasks,
+            "total_tokens": status.total_tokens,
+        }));
+    }
+    drop(agents);
+
+    // 检查客户端连接数
+    let client_count = state.clients.read().await.count();
+
+    // 检查任务管理器
+    let running_tasks = state.task_manager.list_running_tasks().await;
+    let running_task_count = running_tasks.len();
+
+    // 检查数据库
+    let db_healthy = match state.task_manager.store().check_health().await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("数据库健康检查失败: {}", e);
+            false
+        }
+    };
+
+    if !db_healthy {
+        all_healthy = false;
+    }
+
+    let elapsed = start_time.elapsed();
+
+    let status_code = if all_healthy { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let status_str = if all_healthy { "ok" } else { "degraded" };
+
+    (
+        status_code,
+        Json(json!({
+            "status": status_str,
+            "version": env!("CARGO_PKG_VERSION"),
+            "uptime_seconds": elapsed.as_secs_f64(),
+            "components": {
+                "database": { "healthy": db_healthy },
+                "agents": {
+                    "healthy": all_healthy,
+                    "count": agent_health.len(),
+                    "details": agent_health,
+                },
+                "clients": {
+                    "connected": client_count,
+                },
+                "tasks": {
+                    "running": running_task_count,
+                },
+            },
+        })),
+    )
+}
+
+/// Prometheus 指标端点
+async fn metrics_handler(State(state): State<AppState>) -> String {
+    state.metrics.render_prometheus().await
 }
 
 /// 列出所有任务
@@ -264,6 +347,13 @@ async fn handle_socket(
 
     // 注册客户端
     state.clients.write().await.register(&client_id);
+    state.metrics.inc_connections();
+
+    // 发布客户端连接事件
+    state.event_bus.publish(pa_core::GatewayEvent::ClientConnected {
+        client_id: client_id.clone(),
+        timestamp: chrono::Utc::now(),
+    });
 
     // 处理消息
     let (mut sender, mut receiver) = socket.split();
@@ -306,6 +396,13 @@ async fn handle_socket(
 
     // 移除客户端
     state.clients.write().await.unregister(&client_id);
+    state.metrics.dec_connections();
+
+    // 发布客户端断开事件
+    state.event_bus.publish(pa_core::GatewayEvent::ClientDisconnected {
+        client_id: client_id.clone(),
+        reason: "normal".to_string(),
+    });
 }
 
 /// 处理 JSON 协议方法调用
@@ -332,6 +429,13 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("default");
 
+            // 发布请求路由事件
+            state.event_bus.publish(pa_core::GatewayEvent::RequestRouted {
+                request_id: call_id.clone(),
+                agent_id: agent_id.to_string(),
+                strategy: "direct".to_string(),
+            });
+
             // 查找目标 Agent
             let agents = state.agents_map.read().await;
             match agents.get(agent_id) {
@@ -339,6 +443,7 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
                     let mut agent = agent_arc.write().await;
                     let config = pa_query::QueryConfig::default();
                     let result = agent.query_with_task(prompt.to_string(), config).await;
+                    state.metrics.inc_requests();
                     MethodResponse::success(&call_id, json!({
                         "result": result,
                         "agent_id": agent_id,

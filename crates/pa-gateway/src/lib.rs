@@ -9,6 +9,9 @@ pub mod protocol;
 pub mod client;
 pub mod auth;
 pub mod events;
+pub mod watchdog;
+pub mod metrics;
+pub mod alert;
 
 pub use gateway::Gateway;
 pub use server::{GatewayServer, AppState};
@@ -16,3 +19,6 @@ pub use protocol::{Message as ProtocolMessage, MethodCall, MethodResponse};
 pub use client::ClientConnection;
 pub use auth::Authenticator;
 pub use events::EventBus;
+pub use watchdog::{Watchdog, WatchdogConfig};
+pub use metrics::MetricsCollector;
+pub use alert::{AlertManager, AlertLevel};

@@ -52,6 +52,11 @@ impl ClientRegistry {
         self.clients.len()
     }
 
+    /// 获取所有客户端信息
+    pub fn all(&self) -> Vec<&ClientInfo> {
+        self.clients.values().collect()
+    }
+
     /// 获取所有客户端 ID
     pub fn list(&self) -> Vec<&String> {
         self.clients.keys().collect()

@@ -72,3 +72,19 @@ allowed_users = []
 db_path = ".pa/tasks.db"
 cleanup_days = 30
 max_concurrent_tasks = 10
+
+# 告警配置
+[alert]
+enabled = true
+# 告警渠道: "webhook"（默认）或 "feishu"
+channel = "webhook"
+# Webhook URL（默认告警渠道）
+webhook_url = "${ALERT_WEBHOOK_URL:-}"
+# 告警冷却时间（秒）
+cooldown_secs = 300
+
+# 飞书告警配置（可选，当 channel = "feishu" 时生效）
+# [alert.feishu]
+# chat_id = ""
+# app_id = ""
+# app_secret = ""

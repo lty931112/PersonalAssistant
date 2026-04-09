@@ -24,6 +24,8 @@ pub struct Settings {
     pub feishu: Option<FeishuSettings>,
     /// 任务配置
     pub task: TaskSettings,
+    /// 告警配置
+    pub alert: AlertSettings,
 }
 
 impl Default for Settings {
@@ -37,6 +39,7 @@ impl Default for Settings {
             mcp: None,
             feishu: None,
             task: TaskSettings::default(),
+            alert: AlertSettings::default(),
         }
     }
 }
@@ -264,6 +267,54 @@ impl Default for TaskSettings {
             db_path: ".pa/tasks.db".into(),
             cleanup_days: 30,
             max_concurrent_tasks: 10,
+        }
+    }
+}
+
+/// 告警配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertSettings {
+    /// 是否启用告警
+    pub enabled: bool,
+    /// 告警渠道: "webhook" 或 "feishu"
+    pub channel: String,
+    /// Webhook URL（默认渠道）
+    pub webhook_url: String,
+    /// 飞书告警配置（可选，当 channel 为 "feishu" 时使用）
+    pub feishu: Option<AlertFeishuSettings>,
+    /// 告警冷却时间（秒），同一类型的告警在此时间内不重复发送
+    pub cooldown_secs: u64,
+}
+
+impl Default for AlertSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            channel: "webhook".to_string(),
+            webhook_url: String::new(),
+            feishu: None,
+            cooldown_secs: 300,
+        }
+    }
+}
+
+/// 飞书告警配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertFeishuSettings {
+    /// 告警通知的群聊 ID
+    pub chat_id: String,
+    /// App ID（如果未启用飞书通道，需要单独配置）
+    pub app_id: Option<String>,
+    /// App Secret
+    pub app_secret: Option<String>,
+}
+
+impl Default for AlertFeishuSettings {
+    fn default() -> Self {
+        Self {
+            chat_id: String::new(),
+            app_id: None,
+            app_secret: None,
         }
     }
 }
