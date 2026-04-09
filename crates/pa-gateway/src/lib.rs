@@ -11,7 +11,7 @@ pub mod auth;
 pub mod events;
 
 pub use gateway::Gateway;
-pub use server::GatewayServer;
+pub use server::{GatewayServer, AppState};
 pub use protocol::{Message as ProtocolMessage, MethodCall, MethodResponse};
 pub use client::ClientConnection;
 pub use auth::Authenticator;

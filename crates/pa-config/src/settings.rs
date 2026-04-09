@@ -18,6 +18,27 @@ pub struct Settings {
     pub agent: AgentSettings,
     /// 工具配置
     pub tools: ToolSettings,
+    /// MCP 配置
+    pub mcp: Option<McpSettings>,
+    /// 飞书配置
+    pub feishu: Option<FeishuSettings>,
+    /// 任务配置
+    pub task: TaskSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            gateway: GatewaySettings::default(),
+            llm: LlmSettings::default(),
+            memory: MemorySettings::default(),
+            agent: AgentSettings::default(),
+            tools: ToolSettings::default(),
+            mcp: None,
+            feishu: None,
+            task: TaskSettings::default(),
+        }
+    }
 }
 
 /// Gateway 配置
@@ -172,5 +193,77 @@ impl Settings {
     /// 保存配置到文件
     pub fn save(&self, path: &str) -> Result<(), CoreError> {
         ConfigLoader::save(self, path)
+    }
+}
+
+/// MCP 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSettings {
+    /// MCP 配置文件路径
+    pub config_path: Option<String>,
+    /// 是否启用 MCP
+    pub enabled: bool,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            config_path: Some("config/mcp.toml".into()),
+            enabled: false,
+        }
+    }
+}
+
+/// 飞书配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuSettings {
+    /// 是否启用飞书
+    pub enabled: bool,
+    /// App ID
+    pub app_id: String,
+    /// App Secret
+    pub app_secret: String,
+    /// 验证 Token
+    pub verification_token: String,
+    /// 加密密钥（可选）
+    pub encrypt_key: Option<String>,
+    /// Webhook URL 路径
+    pub webhook_path: String,
+    /// 允许的用户列表（空=全部允许）
+    pub allowed_users: Vec<String>,
+}
+
+impl Default for FeishuSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: String::new(),
+            app_secret: String::new(),
+            verification_token: String::new(),
+            encrypt_key: None,
+            webhook_path: "/feishu/webhook".into(),
+            allowed_users: Vec::new(),
+        }
+    }
+}
+
+/// 任务配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSettings {
+    /// SQLite 数据库路径
+    pub db_path: String,
+    /// 自动清理天数
+    pub cleanup_days: u32,
+    /// 最大并发任务数
+    pub max_concurrent_tasks: u32,
+}
+
+impl Default for TaskSettings {
+    fn default() -> Self {
+        Self {
+            db_path: ".pa/tasks.db".into(),
+            cleanup_days: 30,
+            max_concurrent_tasks: 10,
+        }
     }
 }

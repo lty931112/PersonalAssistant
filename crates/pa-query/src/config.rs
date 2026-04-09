@@ -31,6 +31,16 @@ pub struct QueryConfig {
     pub system_prompt: String,
     /// 是否启用记忆检索
     pub memory_enabled: bool,
+    /// 是否启用流式响应（默认 true）
+    ///
+    /// 当启用时，`execute_stream()` 方法会使用 LLM 的流式接口，
+    /// 逐 token 返回响应内容，提供更好的实时体验。
+    pub enable_streaming: bool,
+    /// 是否启用并发工具执行（默认 true）
+    ///
+    /// 当启用时，标记为 `is_concurrency_safe` 的工具会并行执行，
+    /// 显著减少多工具调用的总等待时间。
+    pub concurrent_tools: bool,
 }
 
 impl Default for QueryConfig {
@@ -44,6 +54,8 @@ impl Default for QueryConfig {
             fallback_model: None,
             system_prompt: "You are a helpful AI assistant.".into(),
             memory_enabled: true,
+            enable_streaming: true,
+            concurrent_tools: true,
         }
     }
 }
@@ -99,6 +111,18 @@ impl QueryConfig {
     /// 设置是否启用记忆
     pub fn with_memory_enabled(mut self, enabled: bool) -> Self {
         self.memory_enabled = enabled;
+        self
+    }
+
+    /// 设置是否启用流式响应
+    pub fn with_enable_streaming(mut self, enabled: bool) -> Self {
+        self.enable_streaming = enabled;
+        self
+    }
+
+    /// 设置是否启用并发工具执行
+    pub fn with_concurrent_tools(mut self, enabled: bool) -> Self {
+        self.concurrent_tools = enabled;
         self
     }
 }

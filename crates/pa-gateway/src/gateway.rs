@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use pa_core::{CoreError, AgentId};
 use pa_config::Settings;
+use pa_task::{TaskManager, TaskStore};
+use pa_agent::Agent;
 use crate::server::GatewayServer;
 use crate::client::ClientRegistry;
 use crate::events::EventBus;
@@ -16,34 +18,76 @@ pub struct Gateway {
     clients: Arc<RwLock<ClientRegistry>>,
     event_bus: Arc<EventBus>,
     agents: HashMap<String, AgentId>,
+    /// 任务管理器（统一管理任务生命周期）
+    task_manager: Arc<TaskManager>,
+    /// Agent 实例映射表（并发安全的 Agent 管理）
+    agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
 }
 
 impl Gateway {
     /// 创建新的 Gateway
+    ///
+    /// 初始化 TaskManager、ClientRegistry、EventBus 等核心组件。
     pub async fn new(settings: Settings) -> Result<Self, CoreError> {
+        // 初始化任务存储（使用内存数据库 ":memory:" 用于开发）
+        let task_store = TaskStore::new(":memory:").await?;
+        task_store.init().await?;
+
+        // 创建任务管理器
+        let task_manager = Arc::new(TaskManager::new(task_store));
+
+        tracing::info!("任务管理器已初始化");
+
         Ok(Self {
             settings,
             server: None,
             clients: Arc::new(RwLock::new(ClientRegistry::new())),
             event_bus: Arc::new(EventBus::new()),
             agents: HashMap::new(),
+            task_manager,
+            agents_map: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    /// 使用自定义 TaskStore 创建 Gateway
+    pub async fn with_task_store(
+        settings: Settings,
+        task_store: TaskStore,
+    ) -> Result<Self, CoreError> {
+        // 初始化任务存储
+        task_store.init().await?;
+
+        let task_manager = Arc::new(TaskManager::new(task_store));
+
+        tracing::info!("任务管理器已初始化（自定义存储）");
+
+        Ok(Self {
+            settings,
+            server: None,
+            clients: Arc::new(RwLock::new(ClientRegistry::new())),
+            event_bus: Arc::new(EventBus::new()),
+            agents: HashMap::new(),
+            task_manager,
+            agents_map: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
     /// 启动 Gateway
     pub async fn start(&mut self) -> Result<(), CoreError> {
         let addr = format!("{}:{}", self.settings.gateway.bind, self.settings.gateway.port);
-        tracing::info!("🚀 Gateway 启动于 {}", addr);
+        tracing::info!("Gateway 启动于 {}", addr);
 
         let server = GatewayServer::new(
             addr,
             self.clients.clone(),
             self.event_bus.clone(),
             self.settings.clone(),
+            self.task_manager.clone(),
+            self.agents_map.clone(),
         );
 
         self.server = Some(server);
-        
+
         // 阻塞运行
         if let Some(ref mut server) = self.server {
             server.run().await?;
@@ -52,13 +96,47 @@ impl Gateway {
         Ok(())
     }
 
-    /// 注册 Agent
+    /// 注册 Agent（名称 -> ID 映射）
     pub fn register_agent(&mut self, name: &str, id: AgentId) {
         self.agents.insert(name.to_string(), id);
     }
 
-    /// 获取 Agent
+    /// 获取 Agent（名称 -> ID 映射）
     pub fn get_agent(&self, name: &str) -> Option<&AgentId> {
         self.agents.get(name)
+    }
+
+    /// 获取任务管理器引用
+    pub fn task_manager(&self) -> &Arc<TaskManager> {
+        &self.task_manager
+    }
+
+    /// 注册 Agent 实例
+    ///
+    /// 将 Agent 实例注册到 Gateway 的 Agent 映射表中，
+    /// 使其可以通过 HTTP API 和 WebSocket 进行管理。
+    pub async fn register_agent_instance(&self, agent: Agent) {
+        let agent_id = agent.id().as_str().to_string();
+        tracing::info!("注册 Agent 实例: {}", agent_id);
+        self.agents_map.write().await.insert(agent_id, Arc::new(RwLock::new(agent)));
+    }
+
+    /// 获取 Agent 实例
+    ///
+    /// 根据 Agent ID 获取对应的 Agent 实例引用。
+    pub async fn get_agent_instance(&self, id: &str) -> Option<Arc<RwLock<Agent>>> {
+        self.agents_map.read().await.get(id).cloned()
+    }
+
+    /// 获取所有已注册的 Agent ID 列表
+    pub async fn list_agent_instances(&self) -> Vec<String> {
+        self.agents_map.read().await.keys().cloned().collect()
+    }
+
+    /// 获取 Agent 映射表的共享引用
+    ///
+    /// 用于将 Agent 映射表传递给其他组件。
+    pub fn agents_map(&self) -> Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>> {
+        self.agents_map.clone()
     }
 }

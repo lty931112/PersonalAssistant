@@ -761,9 +761,9 @@ mod tests {
         let n2 = MemoryNode::with_id("n2", "事件2", MemoryNodeType::Action);
         let n3 = MemoryNode::with_id("n3", "事件3", MemoryNodeType::StateChange);
 
-        db.add_node(GraphType::Temporal, n1);
+        db.add_node(GraphType::Temporal, n1.clone());
         db.add_node(GraphType::Temporal, n2);
-        db.add_node(GraphType::Causal, n1.clone());
+        db.add_node(GraphType::Causal, n1);
         db.add_node(GraphType::Causal, n3);
 
         db.add_edge(

@@ -1,21 +1,22 @@
 [package]
-name = "pa-query"
+name = "pa-mcp"
 version.workspace = true
 edition.workspace = true
-description = "Reask query loop engine for PersonalAssistant"
+description = "MCP Host implementation for PersonalAssistant"
 
 [dependencies]
 pa-core = { workspace = true }
-pa-llm = { workspace = true }
-pa-memory = { workspace = true }
 pa-tools = { workspace = true }
-pa-task = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
-futures = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+reqwest = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+toml = { workspace = true }
+eventsource-stream = { workspace = true }

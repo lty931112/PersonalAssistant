@@ -51,3 +51,24 @@ enabled = ["*"]
 disabled = []
 # 权限模式: default, accept_edits, bypass_permissions, plan, auto
 permission_mode = "default"
+
+# MCP 工具配置
+[mcp]
+enabled = false
+config_path = "config/mcp.toml"
+
+# 飞书通道配置
+[feishu]
+enabled = false
+app_id = "${FEISHU_APP_ID}"
+app_secret = "${FEISHU_APP_SECRET}"
+verification_token = "${FEISHU_VERIFICATION_TOKEN}"
+# encrypt_key = ""  # 可选
+webhook_path = "/feishu/webhook"
+allowed_users = []
+
+# 任务管理配置
+[task]
+db_path = ".pa/tasks.db"
+cleanup_days = 30
+max_concurrent_tasks = 10

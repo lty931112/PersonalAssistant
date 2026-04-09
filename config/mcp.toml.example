@@ -1,0 +1,23 @@
+# MCP Server 配置示例
+# 每个 server 可以是 stdio 或 http 类型
+
+[[servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@anthropic/mcp-server-filesystem", "/tmp"]
+enabled = true
+
+[[servers]]
+name = "web-search"
+transport = "http"
+url = "http://localhost:3001/mcp"
+enabled = false
+
+# 更多 MCP Server 示例
+# [[servers]]
+# name = "browser"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@anthropic/mcp-server-puppeteer"]
+# enabled = false

@@ -8,6 +8,8 @@ description = "Gateway control plane for PersonalAssistant"
 pa-core = { workspace = true }
 pa-agent = { workspace = true }
 pa-config = { workspace = true }
+pa-task = { workspace = true }
+pa-query = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

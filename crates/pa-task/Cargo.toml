@@ -1,21 +1,18 @@
 [package]
-name = "pa-query"
+name = "pa-task"
 version.workspace = true
 edition.workspace = true
-description = "Reask query loop engine for PersonalAssistant"
+description = "Task monitoring and recovery for PersonalAssistant"
 
 [dependencies]
 pa-core = { workspace = true }
-pa-llm = { workspace = true }
-pa-memory = { workspace = true }
-pa-tools = { workspace = true }
-pa-task = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
-futures = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+tokio-rusqlite = "0.5"

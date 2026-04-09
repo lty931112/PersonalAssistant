@@ -11,5 +11,6 @@ pub mod llm_provider;
 pub use plugin::{Plugin, PluginContext, PluginMetadata};
 pub use extension::{Extension, ExtensionManager};
 pub use channel::{ChannelPlugin, ChannelMessage, ChannelConfig};
-pub use tool::{ToolPlugin, ToolDefinition};
+pub use tool::ToolPlugin;
+pub use pa_core::ToolDefinition;
 pub use llm_provider::{LlmProviderPlugin, LlmConfig};

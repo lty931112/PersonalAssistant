@@ -7,8 +7,8 @@ pub mod router;
 pub mod sandbox;
 pub mod auth_profile;
 
-pub use agent::{Agent, AgentHandle, AgentState};
-pub use router::{AgentRouter, RoutingRule};
+pub use agent::{Agent, AgentHandle, AgentState, AgentStatusInfo, AgentCommand, AgentEvent};
+pub use router::{AgentRouter, RoutingRule, RoutingContext, RoutingResult};
 pub use sandbox::SandboxExecutor;
 pub use auth_profile::{AuthProfile, AuthProfileManager};
 

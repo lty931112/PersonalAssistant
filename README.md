@@ -34,6 +34,27 @@
 - 工具插件
 - 记忆系统插件
 
+### 🔌 MCP Host
+完整的 MCP（Model Context Protocol）协议支持：
+- stdio 和 http 两种传输方式
+- 通过 TOML 配置文件管理 MCP Server
+- 动态启用/禁用 MCP Server
+- 与内置工具系统无缝集成
+
+### 📱 飞书通道
+通过飞书 Bot 进行交互：
+- Webhook 事件回调
+- 用户白名单控制
+- 环境变量注入敏感配置
+- 可选消息加密
+
+### 📊 任务管理
+任务监控与持久化：
+- SQLite 持久化存储
+- 任务中断恢复
+- 自动清理过期任务
+- 最大并发任务数控制
+
 ## 📦 项目结构
 
 ```
@@ -46,6 +67,9 @@ PersonalAssistant/
 │   ├── pa-tools/          # 工具系统
 │   ├── pa-agent/          # Agent 运行时
 │   ├── pa-gateway/        # Gateway 控制平面
+│   ├── pa-mcp/            # MCP Host 实现
+│   ├── pa-task/           # 任务管理（监控、持久化）
+│   ├── pa-channel-feishu/ # 飞书通道适配
 │   ├── pa-plugin-sdk/     # 插件 SDK
 │   └── pa-config/         # 配置系统
 ├── config/                # 默认 TOML 配置
@@ -57,9 +81,8 @@ PersonalAssistant/
 
 ### 实现状态说明
 
-- 各子系统（Gateway、Agent、Query、Memory、Tools）已在对应 crate 中实现或部分实现。
-- 根目录 `src/main.rs` 当前为**占位入口**（仅打印名称），尚未串联 `pa-gateway` / `pa-agent` 与配置加载。
-- `src/cli.rs` 已提供 `start`、`query`、`version` 等参数解析，**尚未**在 `main` 中调用；因此下方「运行」中的命令需在完成接入后验证。
+- 各子系统（Gateway、Agent、Query、Memory、Tools、MCP、Task、Feishu Channel）已在对应 crate 中实现或部分实现。
+- `src/cli.rs` 已提供 `start`、`query`、`version` 等参数解析。
 
 ## 🚀 快速开始
 
@@ -98,6 +121,23 @@ max_traversal_hops = 3
 [agent]
 default_max_turns = 10
 tool_result_budget = 50000
+
+[mcp]
+enabled = false
+config_path = "config/mcp.toml"
+
+[feishu]
+enabled = false
+app_id = "${FEISHU_APP_ID}"
+app_secret = "${FEISHU_APP_SECRET}"
+verification_token = "${FEISHU_VERIFICATION_TOKEN}"
+webhook_path = "/feishu/webhook"
+allowed_users = []
+
+[task]
+db_path = ".pa/tasks.db"
+cleanup_days = 30
+max_concurrent_tasks = 10
 ```
 
 ### 运行
@@ -136,6 +176,7 @@ PowerShell 设置环境变量：`$env:ANTHROPIC_API_KEY = "your-api-key"`。
 | `memory_store` | 存储记忆到 MAGMA |
 | `memory_query` | 从 MAGMA 检索记忆 |
 | `web_fetch` | 获取网页内容 |
+| `mcp_*` | MCP 工具（通过 MCP 协议动态加载，参见 `config/mcp.toml.example`） |
 
 ## 📖 架构详解
 

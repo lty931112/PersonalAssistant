@@ -10,6 +10,9 @@ members = [
     "crates/pa-tools",
     "crates/pa-config",
     "crates/pa-llm",
+    "crates/pa-mcp",
+    "crates/pa-channel-feishu",
+    "crates/pa-task",
     ".",
 ]
 
@@ -78,6 +81,9 @@ pa-plugin-sdk = { path = "crates/pa-plugin-sdk" }
 pa-tools = { path = "crates/pa-tools" }
 pa-config = { path = "crates/pa-config" }
 pa-llm = { path = "crates/pa-llm" }
+pa-mcp = { path = "crates/pa-mcp" }
+pa-channel-feishu = { path = "crates/pa-channel-feishu" }
+pa-task = { path = "crates/pa-task" }
 
 [profile.release]
 opt-level = 3
@@ -104,9 +110,15 @@ pa-gateway = { workspace = true }
 pa-tools = { workspace = true }
 pa-config = { workspace = true }
 pa-llm = { workspace = true }
+pa-mcp = { workspace = true }
+pa-task = { workspace = true }
+pa-channel-feishu = { workspace = true }
 
 # 外部依赖
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+chrono = { workspace = true }

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use pa_core::CoreError;
-use crate::settings::{Settings, GatewaySettings, LlmSettings, MemorySettings, AgentSettings, ToolSettings};
+use crate::settings::Settings;
 use crate::env::EnvSubstitution;
 
 /// 配置加载器
@@ -62,17 +62,5 @@ impl ConfigLoader {
             .map_err(|e| CoreError::io_error(e.to_string()))?;
         
         Ok(())
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            gateway: GatewaySettings::default(),
-            llm: LlmSettings::default(),
-            memory: MemorySettings::default(),
-            agent: AgentSettings::default(),
-            tools: ToolSettings::default(),
-        }
     }
 }
