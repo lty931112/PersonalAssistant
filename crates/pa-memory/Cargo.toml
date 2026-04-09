@@ -1,0 +1,16 @@
+[package]
+name = "pa-memory"
+version.workspace = true
+edition.workspace = true
+description = "MAGMA memory engine for PersonalAssistant"
+
+[dependencies]
+pa-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

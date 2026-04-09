@@ -1,0 +1,17 @@
+[package]
+name = "pa-llm"
+version.workspace = true
+edition.workspace = true
+description = "LLM client abstraction for PersonalAssistant"
+
+[dependencies]
+pa-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+eventsource-stream = { workspace = true }

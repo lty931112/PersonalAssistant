@@ -1,0 +1,112 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pa-core",
+    "crates/pa-memory",
+    "crates/pa-query",
+    "crates/pa-agent",
+    "crates/pa-gateway",
+    "crates/pa-plugin-sdk",
+    "crates/pa-tools",
+    "crates/pa-config",
+    "crates/pa-llm",
+    ".",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["PersonalAssistant Contributors"]
+license = "MIT"
+repository = "https://github.com/user/PersonalAssistant"
+description = "An AI agent platform combining OpenClaw gateway architecture, Claude Code reask query loop, and MAGMA multi-graph memory"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP
+reqwest = { version = "0.12.4", features = ["json", "stream", "rustls-tls"], default-features = false }
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# WebSocket
+tokio-tungstenite = "0.24"
+
+# Crypto
+sha2 = "0.10"
+hex = "0.4"
+
+# UUID
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+futures = "0.3"
+regex = "1"
+url = "2"
+glob = "0.3"
+eventsource-stream = "0.2"
+
+# 锁定 getrandom 以兼容旧版 Rust
+getrandom = "0.2"
+
+# Internal crates
+pa-core = { path = "crates/pa-core" }
+pa-memory = { path = "crates/pa-memory" }
+pa-query = { path = "crates/pa-query" }
+pa-agent = { path = "crates/pa-agent" }
+pa-gateway = { path = "crates/pa-gateway" }
+pa-plugin-sdk = { path = "crates/pa-plugin-sdk" }
+pa-tools = { path = "crates/pa-tools" }
+pa-config = { path = "crates/pa-config" }
+pa-llm = { path = "crates/pa-llm" }
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# 根 crate 定义
+[package]
+name = "personal-assistant"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "personal-assistant"
+path = "src/main.rs"
+
+[dependencies]
+# 内部 crates
+pa-core = { workspace = true }
+pa-memory = { workspace = true }
+pa-query = { workspace = true }
+pa-agent = { workspace = true }
+pa-gateway = { workspace = true }
+pa-tools = { workspace = true }
+pa-config = { workspace = true }
+pa-llm = { workspace = true }
+
+# 外部依赖
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
