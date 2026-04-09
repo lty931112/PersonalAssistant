@@ -48,11 +48,18 @@ PersonalAssistant/
 │   ├── pa-gateway/        # Gateway 控制平面
 │   ├── pa-plugin-sdk/     # 插件 SDK
 │   └── pa-config/         # 配置系统
-├── config/                # 配置文件
-├── examples/              # 示例代码
-├── docs/                  # 文档
-└── src/                   # 主程序入口
+├── config/                # 默认 TOML 配置
+├── docs/                  # 补充文档（架构、crate、配置说明）
+└── src/                   # 根可执行包：main.rs（CLI 解析见 cli.rs）
 ```
+
+更细的模块依赖与配置项说明见 [docs/README.md](docs/README.md)。
+
+### 实现状态说明
+
+- 各子系统（Gateway、Agent、Query、Memory、Tools）已在对应 crate 中实现或部分实现。
+- 根目录 `src/main.rs` 当前为**占位入口**（仅打印名称），尚未串联 `pa-gateway` / `pa-agent` 与配置加载。
+- `src/cli.rs` 已提供 `start`、`query`、`version` 等参数解析，**尚未**在 `main` 中调用；因此下方「运行」中的命令需在完成接入后验证。
 
 ## 🚀 快速开始
 
@@ -95,16 +102,27 @@ tool_result_budget = 50000
 
 ### 运行
 
+在完成 `main` 与 `cli` 的接入前，可先编译与单测：
+
 ```bash
-# 设置 API 密钥
+cargo build --release
+cargo test
+```
+
+接入 CLI 后，预期用法（与 `src/cli.rs` 一致）示例：
+
+```bash
+# 设置 API 密钥（Linux / macOS）
 export ANTHROPIC_API_KEY=your-api-key
 
-# 启动 Gateway
+# 启动 Gateway（待 main 接入后生效）
 cargo run -- start
 
-# 或执行单次查询
+# 单次查询（待 main 接入后生效）
 cargo run -- query "你好，请介绍一下你自己"
 ```
+
+PowerShell 设置环境变量：`$env:ANTHROPIC_API_KEY = "your-api-key"`。
 
 ## 🛠️ 内置工具
 
