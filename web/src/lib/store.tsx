@@ -13,6 +13,8 @@ import type {
   AgentStatusInfo,
   ToolCall,
   WSIncoming,
+  HealthDetail,
+  AlertRecord,
 } from './types';
 import { WebSocketClient, type WSMessageHandler, type WSConnectionState } from './websocket';
 import { getTasks, getAgents } from './api';
@@ -44,6 +46,10 @@ interface AppState {
   loading: boolean;
   /** 错误信息 */
   error: string | null;
+  /** 健康检查详情 */
+  healthDetail: HealthDetail | null;
+  /** 告警记录列表 */
+  alerts: AlertRecord[];
 }
 
 // ============================================================
@@ -67,7 +73,10 @@ type Action =
   | { type: 'UPDATE_TOOL_CALL'; payload: { toolId: string; endTime: string; result: string; isError?: boolean } }
   | { type: 'CLEAR_TOOL_CALLS' }
   | { type: 'SET_LOADING'; payload: boolean }
-  | { type: 'SET_ERROR'; payload: string | null };
+  | { type: 'SET_ERROR'; payload: string | null }
+  | { type: 'SET_HEALTH_DETAIL'; payload: HealthDetail | null }
+  | { type: 'SET_ALERTS'; payload: AlertRecord[] }
+  | { type: 'ADD_ALERT'; payload: AlertRecord };
 
 // ============================================================
 // 初始状态
@@ -91,6 +100,8 @@ const initialState: AppState = {
   activeToolCalls: [],
   loading: false,
   error: null,
+  healthDetail: null,
+  alerts: [],
 };
 
 // ============================================================
@@ -211,6 +222,15 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'SET_ERROR':
       return { ...state, error: action.payload };
 
+    case 'SET_HEALTH_DETAIL':
+      return { ...state, healthDetail: action.payload };
+
+    case 'SET_ALERTS':
+      return { ...state, alerts: action.payload };
+
+    case 'ADD_ALERT':
+      return { ...state, alerts: [action.payload, ...state.alerts].slice(0, 100) };
+
     default:
       return state;
   }
@@ -228,6 +248,7 @@ interface AppContextValue {
   cancelTask: (taskId: string) => void;
   refreshTasks: () => Promise<void>;
   refreshAgents: () => Promise<void>;
+  refreshHealth: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -315,11 +336,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const refreshInterval = setInterval(() => {
       refreshTasks();
       refreshAgents();
+      refreshHealth();
     }, 10000);
 
     // 初始加载
     refreshTasks();
     refreshAgents();
+    refreshHealth();
 
     return () => {
       client.disconnect();
@@ -528,6 +551,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /** 刷新健康检查 */
+  const refreshHealth = useCallback(async () => {
+    try {
+      const { getHealthDetail } = await import('./api');
+      const detail = await getHealthDetail();
+      dispatch({ type: 'SET_HEALTH_DETAIL', payload: detail });
+    } catch {
+      // 静默失败
+    }
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -538,6 +572,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         cancelTask,
         refreshTasks,
         refreshAgents,
+        refreshHealth,
       }}
     >
       {children}

@@ -2,7 +2,7 @@
 // PersonalAssistant 前端 - HTTP API 客户端
 // ============================================================
 
-import type { TaskInfo, TaskEvent, AgentStatusInfo } from './types';
+import type { TaskInfo, TaskEvent, AgentStatusInfo, HealthDetail, AlertConfig, WatchdogConfig, MetricsData } from './types';
 
 /**
  * 获取 API 基础地址
@@ -101,4 +101,118 @@ export async function getAgentStatus(agentId: string): Promise<AgentStatusInfo> 
 /** 检查后端是否在线 */
 export async function healthCheck(): Promise<string> {
   return request('/health');
+}
+
+// ============================================================
+// 深度健康检查
+// ============================================================
+
+/** 获取深度健康检查详情 */
+export async function getHealthDetail(): Promise<HealthDetail> {
+  return request('/health');
+}
+
+// ============================================================
+// 告警配置 API
+// ============================================================
+
+/** 获取告警配置 */
+export async function getAlertConfig(): Promise<AlertConfig> {
+  return request('/config/alert');
+}
+
+/** 更新告警配置 */
+export async function updateAlertConfig(config: Partial<AlertConfig>): Promise<{ success: boolean }> {
+  return request('/config/alert', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+// ============================================================
+// Watchdog 配置 API
+// ============================================================
+
+/** 获取 Watchdog 配置 */
+export async function getWatchdogConfig(): Promise<WatchdogConfig> {
+  return request('/config/watchdog');
+}
+
+/** 更新 Watchdog 配置 */
+export async function updateWatchdogConfig(config: Partial<WatchdogConfig>): Promise<{ success: boolean }> {
+  return request('/config/watchdog', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+// ============================================================
+// Prometheus 指标 API
+// ============================================================
+
+/** 获取 Prometheus 格式的原始指标 */
+export async function getMetricsRaw(): Promise<string> {
+  const baseUrl = getApiBaseUrl().replace(/\/api$/, '');
+  const url = `${baseUrl}/metrics`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`获取指标失败 (${res.status})`);
+  }
+  return res.text();
+}
+
+/** 获取解析后的指标数据 */
+export async function getMetrics(): Promise<MetricsData> {
+  const raw = await getMetricsRaw();
+  return parsePrometheusMetrics(raw);
+}
+
+// ============================================================
+// Prometheus 指标解析工具
+// ============================================================
+
+/** 解析 Prometheus 文本格式指标 */
+function parsePrometheusMetrics(raw: string): MetricsData {
+  const metrics: Record<string, number> = {};
+  const lines = raw.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // 跳过注释和空行
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const lastSpace = trimmed.lastIndexOf(' ');
+    if (lastSpace === -1) continue;
+
+    const name = trimmed.substring(0, lastSpace).trim();
+    const value = parseFloat(trimmed.substring(lastSpace + 1).trim());
+
+    if (!isNaN(value)) {
+      metrics[name] = value;
+    }
+  }
+
+  return {
+    process: {
+      uptime_seconds: metrics['pa_process_uptime_seconds'] || 0,
+      requests_total: metrics['pa_process_requests_total'] || 0,
+      active_connections: metrics['pa_process_active_connections'] || 0,
+      memory_bytes: metrics['pa_process_memory_bytes'] || 0,
+      cpu_usage: metrics['pa_process_cpu_usage'] || 0,
+      threads: metrics['pa_process_threads'] || 0,
+      open_fds: metrics['pa_process_open_fds'] || 0,
+    },
+    tasks: {
+      completed_total: metrics['pa_tasks_completed_total'] || 0,
+      failed_total: metrics['pa_tasks_failed_total'] || 0,
+      running: metrics['pa_tasks_running'] || 0,
+    },
+    system: {
+      cpu_usage: metrics['pa_system_cpu_usage'] || 0,
+      memory_total_bytes: metrics['pa_system_memory_total_bytes'] || 0,
+      memory_available_bytes: metrics['pa_system_memory_available_bytes'] || 0,
+      memory_used_bytes: metrics['pa_system_memory_used_bytes'] || 0,
+    },
+    raw,
+  };
 }
