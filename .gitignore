@@ -43,3 +43,7 @@ config/local.toml
 
 # 构建产物
 *.pdb
+node_modules/
+web/node_modules/
+web/.next/
+web/.env.local
