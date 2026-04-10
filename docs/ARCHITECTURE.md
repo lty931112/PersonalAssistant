@@ -74,9 +74,10 @@ flowchart TB
 
 根 README 中的 OpenClaw 式 Gateway、Claude Code 式 Reask、MAGMA 多图谱记忆，在代码中分别主要落在 `pa-gateway`、`pa-query`、`pa-memory`。具体行为以各 crate 源码为准；若根二进制尚未接入上述模块，属于集成进度问题，而非架构分层错误。
 
-## 当前集成缺口（截至代码现状）
+## 当前集成状态（截至代码现状）
 
-- 根包 `src/main.rs` 仅为占位输出，**尚未**调用 `pa-gateway` / `pa-agent` / `pa-query` 组装完整服务。
-- `src/cli.rs` 已实现 `start` / `query` / `version` 等参数解析，但 **未被** `main.rs` 引用；因此文档中的命令行体验需在接入后验证。
+- 根包 `src/main.rs` 已接入 `src/cli.rs` 参数解析，并支持 `start` / `query` / `version` 子命令。
+- 启动链路已包含核心组装流程：`Settings` 加载 → LLM / Memory / ToolRegistry 初始化 → `QueryEngine` → `Agent` → `Gateway`。
+- `start` 模式已支持可选 MCP 工具加载、飞书通道初始化、任务库初始化与优雅关闭信号处理。
 
-后续若在 `main` 中接入 CLI，建议顺序为：加载 `Settings` → 按子命令启动 Gateway 或执行单次 Query。
+后续可继续加强的方向主要是「跨模块行为验证」与「端到端运行脚本完善」，而非主流程接线缺失。

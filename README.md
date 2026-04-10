@@ -81,8 +81,8 @@ PersonalAssistant/
 
 ### 实现状态说明
 
-- 各子系统（Gateway、Agent、Query、Memory、Tools、MCP、Task、Feishu Channel）已在对应 crate 中实现或部分实现。
-- `src/cli.rs` 已提供 `start`、`query`、`version` 等参数解析。
+- 各子系统（Gateway、Agent、Query、Memory、Tools、MCP、Task、Feishu Channel）已在对应 crate 中实现并完成主流程接线。
+- 根入口 `src/main.rs` 已接入 `src/cli.rs`，支持 `start`、`query`、`version` 子命令。
 
 ## 🚀 快速开始
 
@@ -149,23 +149,23 @@ max_concurrent_tasks = 10
 
 ### 运行
 
-在完成 `main` 与 `cli` 的接入前，可先编译与单测：
+可先编译与运行测试：
 
 ```bash
 cargo build --release
 cargo test
 ```
 
-接入 CLI 后，预期用法（与 `src/cli.rs` 一致）示例：
+CLI 实际用法（与 `src/cli.rs` 一致）示例：
 
 ```bash
 # 设置 API 密钥（Linux / macOS）
 export ANTHROPIC_API_KEY=your-api-key
 
-# 启动 Gateway（待 main 接入后生效）
+# 启动 Gateway
 cargo run -- start
 
-# 单次查询（待 main 接入后生效）
+# 单次查询
 cargo run -- query "你好，请介绍一下你自己"
 ```
 
