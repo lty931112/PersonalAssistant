@@ -7,6 +7,8 @@
 //! - 状态快照（保存/恢复查询状态）
 //! - 进度回调（通过事件通道通知轮次完成）
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tracing;
 
@@ -19,6 +21,18 @@ use pa_memory::MagmaMemoryEngine;
 use pa_task::CancellationToken;
 use pa_tools::ToolRegistry;
 
+use crate::approval::{ToolApprovalProvider, ToolApprovalRequest};
+use crate::audit::{AuditSink, TraceEmitter};
+
+/// `Ask` 权限的后续处理
+enum AskResolution {
+    /// 继续执行工具
+    Proceed,
+    /// 用户拒绝
+    DenyUser,
+    /// 无批准通道，保持「需确认」错误语义
+    LegacyNeedConfirm { prompt: String },
+}
 use crate::config::QueryConfig;
 use crate::error::{ErrorAction, ErrorClassifier};
 use crate::permission::{PermissionChecker, PermissionDecision};
@@ -62,6 +76,10 @@ pub struct QueryEngine {
     memory: MagmaMemoryEngine,
     tool_registry: ToolRegistry,
     permission_checker: PermissionChecker,
+    /// 可选审计落盘（JSONL）；与 `TraceEmitter` 配合
+    audit_sink: Option<Arc<AuditSink>>,
+    /// 可选：工具需确认时等待人工批准（CLI / 共享 Broker）
+    approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
     total_usage: UsageInfo,
     total_cost_usd: f64,
     conversation_history: Vec<Message>,
@@ -83,12 +101,91 @@ impl QueryEngine {
             memory,
             tool_registry,
             permission_checker: PermissionChecker::new(),
+            audit_sink: None,
+            approval_provider: None,
             total_usage: UsageInfo::default(),
             total_cost_usd: 0.0,
             conversation_history: Vec::new(),
             using_fallback: false,
             cancel_token: None,
         })
+    }
+
+    /// 覆盖权限检查器（由上层注入工作区 / 外联策略）
+    pub fn with_permission_checker(mut self, checker: PermissionChecker) -> Self {
+        self.permission_checker = checker;
+        self
+    }
+
+    /// 设置审计落盘目标（`None` 关闭文件审计，仍可发 `Observability` 事件）
+    pub fn with_audit_sink(mut self, sink: Option<Arc<AuditSink>>) -> Self {
+        self.audit_sink = sink;
+        self
+    }
+
+    /// 设置人工批准提供者；为 `None` 时「需确认」工具仍按原逻辑返回错误结果给模型
+    pub fn with_approval_provider(mut self, provider: Option<Arc<dyn ToolApprovalProvider>>) -> Self {
+        self.approval_provider = provider;
+        self
+    }
+
+    async fn resolve_ask_with_provider(
+        provider: Option<&Arc<dyn ToolApprovalProvider>>,
+        tool_name: &str,
+        tool_id: &str,
+        input: &serde_json::Value,
+        prompt: String,
+        trace: &TraceEmitter,
+        turn: u32,
+        event_tx: &mpsc::Sender<QueryEvent>,
+    ) -> AskResolution {
+        let Some(provider) = provider else {
+            return AskResolution::LegacyNeedConfirm { prompt };
+        };
+
+        let approval_id = uuid::Uuid::new_v4().to_string();
+        let input_summary = Self::summarize_tool_input(tool_name, input);
+        trace
+            .emit(
+                event_tx,
+                "approval_requested",
+                Some(turn),
+                serde_json::json!({
+                    "approval_id": &approval_id,
+                    "trace_id": trace.trace_id(),
+                    "tool": tool_name,
+                    "tool_id": tool_id,
+                    "prompt": &prompt,
+                    "input": input_summary.clone(),
+                }),
+            )
+            .await;
+
+        let req = ToolApprovalRequest {
+            approval_id: approval_id.clone(),
+            trace_id: trace.trace_id().to_string(),
+            turn,
+            tool_name: tool_name.to_string(),
+            tool_id: tool_id.to_string(),
+            prompt,
+            input_summary,
+        };
+
+        let approved = provider.wait_approval(req).await;
+        trace
+            .emit(
+                event_tx,
+                "approval_resolved",
+                Some(turn),
+                serde_json::json!({ "approval_id": approval_id, "approved": approved }),
+            )
+            .await;
+
+        if approved {
+            AskResolution::Proceed
+        } else {
+            AskResolution::DenyUser
+        }
     }
 
     // ========================================================================
@@ -150,7 +247,11 @@ impl QueryEngine {
 
     /// 简化版执行
     pub async fn execute(&mut self, prompt: String, config: QueryConfig) -> Result<String, CoreError> {
-        let (tx, _rx) = mpsc::channel(256);
+        let (tx, mut rx) = mpsc::channel(256);
+        // 丢弃事件但保持 channel 畅通，避免大量 Observability 事件阻塞 send
+        tokio::spawn(async move {
+            while rx.recv().await.is_some() {}
+        });
         let outcome = self.execute_with_events(prompt, config, tx).await;
 
         match outcome {
@@ -180,9 +281,17 @@ impl QueryEngine {
     ) -> Result<QueryOutcome, CoreError> {
         tracing::info!(model = %config.model, max_turns = config.max_turns, "开始 reask 循环");
 
+        let trace = TraceEmitter::new(self.audit_sink.clone());
+        let _ = event_tx
+            .send(QueryEvent::TraceStarted {
+                trace_id: trace.trace_id().to_string(),
+            })
+            .await;
+
         // 预算检查
         if let Some(limit) = config.max_budget_usd {
             if self.total_cost_usd >= limit {
+                Self::emit_trace_end(&event_tx, &trace, "budget_exceeded", None).await;
                 return Ok(QueryOutcome::BudgetExceeded {
                     cost_usd: self.total_cost_usd,
                     limit_usd: limit,
@@ -192,27 +301,49 @@ impl QueryEngine {
 
         // 添加用户消息
         self.conversation_history.push(Message::user(&prompt));
+        trace
+            .emit(
+                &event_tx,
+                "user_message",
+                None,
+                serde_json::json!({ "chars": prompt.len() }),
+            )
+            .await;
 
         let tool_definitions = self.tool_registry.list_definitions();
 
         // 构建系统提示（含记忆上下文）
         let system_prompt = self.build_system_prompt(&config).await;
+        trace
+            .emit(
+                &event_tx,
+                "system_prompt_ready",
+                None,
+                serde_json::json!({ "chars": system_prompt.len() }),
+            )
+            .await;
 
         let mut turn = 0u32;
 
         loop {
             turn += 1;
 
+            trace
+                .emit(&event_tx, "turn_start", Some(turn), serde_json::json!({}))
+                .await;
+
             // ---- 中断检查：每轮开始 ----
             if self.is_cancelled() {
                 tracing::info!(turn, "查询被取消（轮次开始时）");
                 let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                 return Ok(QueryOutcome::Cancelled);
             }
 
             if turn > config.max_turns {
                 tracing::warn!(turn, max_turns = config.max_turns, "达到最大轮数");
                 let _ = event_tx.send(QueryEvent::Error(format!("达到最大轮数 ({})", config.max_turns))).await;
+                Self::emit_trace_end(&event_tx, &trace, "max_turns_exceeded", Some(turn)).await;
                 break;
             }
 
@@ -233,6 +364,7 @@ impl QueryEngine {
             if self.is_cancelled() {
                 tracing::info!(turn, "查询被取消（LLM 调用前）");
                 let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                 return Ok(QueryOutcome::Cancelled);
             }
 
@@ -259,6 +391,7 @@ impl QueryEngine {
                                 turn -= 1;
                                 continue;
                             }
+                            Self::emit_trace_end(&event_tx, &trace, "llm_error", Some(turn)).await;
                             return Ok(QueryOutcome::Error(error));
                         }
                         ErrorAction::AutoCompact => {
@@ -267,6 +400,7 @@ impl QueryEngine {
                             continue;
                         }
                         ErrorAction::Abort => {
+                            Self::emit_trace_end(&event_tx, &trace, "llm_error", Some(turn)).await;
                             return Ok(QueryOutcome::Error(error));
                         }
                     }
@@ -276,6 +410,20 @@ impl QueryEngine {
             // 更新使用量
             self.total_usage.input_tokens += response.usage.input_tokens;
             self.total_usage.output_tokens += response.usage.output_tokens;
+
+            trace
+                .emit(
+                    &event_tx,
+                    "llm_response",
+                    Some(turn),
+                    serde_json::json!({
+                        "stop_reason": format!("{:?}", response.stop_reason),
+                        "content_blocks": response.content.len(),
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                    }),
+                )
+                .await;
 
             // 发送状态事件
             let _ = event_tx.send(QueryEvent::Status(format!("轮次 {}: {} tokens", turn,
@@ -303,6 +451,7 @@ impl QueryEngine {
                         stop_reason: StopReason::EndTurn,
                         usage: self.total_usage.clone(),
                     }).await;
+                    Self::emit_trace_end(&event_tx, &trace, "end_turn", Some(turn)).await;
                     return Ok(QueryOutcome::EndTurn {
                         message: assistant_message,
                         usage: self.total_usage.clone(),
@@ -310,6 +459,7 @@ impl QueryEngine {
                 }
                 StopReason::MaxTokens => {
                     tracing::warn!(turn, "max_tokens");
+                    Self::emit_trace_end(&event_tx, &trace, "max_tokens", Some(turn)).await;
                     return Ok(QueryOutcome::MaxTokens {
                         partial_message: assistant_message,
                         usage: self.total_usage.clone(),
@@ -322,10 +472,19 @@ impl QueryEngine {
                     if self.is_cancelled() {
                         tracing::info!(turn, "查询被取消（工具执行前）");
                         let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                        Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                         return Ok(QueryOutcome::Cancelled);
                     }
 
-                    let tool_results = self.execute_tools(&response, &event_tx, config.concurrent_tools).await;
+                    let tool_results = self
+                        .execute_tools(
+                            &response,
+                            &event_tx,
+                            config.concurrent_tools,
+                            &trace,
+                            turn,
+                        )
+                        .await;
 
                     let tool_result_blocks: Vec<ContentBlock> = tool_results
                         .into_iter()
@@ -348,9 +507,11 @@ impl QueryEngine {
                     continue;
                 }
                 StopReason::Cancelled => {
+                    Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                     return Ok(QueryOutcome::Cancelled);
                 }
                 _ => {
+                    Self::emit_trace_end(&event_tx, &trace, "end_turn_other", Some(turn)).await;
                     return Ok(QueryOutcome::EndTurn {
                         message: assistant_message,
                         usage: self.total_usage.clone(),
@@ -359,6 +520,7 @@ impl QueryEngine {
             }
         }
 
+        Self::emit_trace_end(&event_tx, &trace, "internal_error", Some(turn)).await;
         Ok(QueryOutcome::Error(CoreError::Internal("查询循环异常退出".to_string())))
     }
 
@@ -398,39 +560,69 @@ impl QueryEngine {
     ) -> Result<(), CoreError> {
         tracing::info!(model = %config.model, max_turns = config.max_turns, "开始流式 reask 循环");
 
+        let trace = TraceEmitter::new(self.audit_sink.clone());
+        let _ = event_tx
+            .send(QueryEvent::TraceStarted {
+                trace_id: trace.trace_id().to_string(),
+            })
+            .await;
+
         // 预算检查
         if let Some(limit) = config.max_budget_usd {
             if self.total_cost_usd >= limit {
                 let _ = event_tx.send(QueryEvent::Error(format!(
                     "超出预算: ${:.4} / ${:.4}", self.total_cost_usd, limit
                 ))).await;
+                Self::emit_trace_end(&event_tx, &trace, "budget_exceeded", None).await;
                 return Ok(());
             }
         }
 
         // 添加用户消息
         self.conversation_history.push(Message::user(&prompt));
+        trace
+            .emit(
+                &event_tx,
+                "user_message",
+                None,
+                serde_json::json!({ "chars": prompt.len() }),
+            )
+            .await;
 
         let tool_definitions = self.tool_registry.list_definitions();
 
         // 构建系统提示（含记忆上下文）
         let system_prompt = self.build_system_prompt(&config).await;
+        trace
+            .emit(
+                &event_tx,
+                "system_prompt_ready",
+                None,
+                serde_json::json!({ "chars": system_prompt.len() }),
+            )
+            .await;
 
         let mut turn = 0u32;
 
         loop {
             turn += 1;
 
+            trace
+                .emit(&event_tx, "turn_start", Some(turn), serde_json::json!({}))
+                .await;
+
             // ---- 中断检查：每轮开始 ----
             if self.is_cancelled() {
                 tracing::info!(turn, "流式查询被取消（轮次开始时）");
                 let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                 return Ok(());
             }
 
             if turn > config.max_turns {
                 tracing::warn!(turn, max_turns = config.max_turns, "达到最大轮数");
                 let _ = event_tx.send(QueryEvent::Error(format!("达到最大轮数 ({})", config.max_turns))).await;
+                Self::emit_trace_end(&event_tx, &trace, "max_turns_exceeded", Some(turn)).await;
                 break;
             }
 
@@ -451,6 +643,7 @@ impl QueryEngine {
             if self.is_cancelled() {
                 tracing::info!(turn, "流式查询被取消（LLM 调用前）");
                 let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                 return Ok(());
             }
 
@@ -490,6 +683,7 @@ impl QueryEngine {
                                 continue;
                             }
                             let _ = event_tx.send(QueryEvent::Error(format!("LLM 错误: {}", error))).await;
+                            Self::emit_trace_end(&event_tx, &trace, "llm_error", Some(turn)).await;
                             return Ok(());
                         }
                         ErrorAction::AutoCompact => {
@@ -499,6 +693,7 @@ impl QueryEngine {
                         }
                         ErrorAction::Abort => {
                             let _ = event_tx.send(QueryEvent::Error(format!("LLM 错误（不可恢复）: {}", error))).await;
+                            Self::emit_trace_end(&event_tx, &trace, "llm_error", Some(turn)).await;
                             return Ok(());
                         }
                     }
@@ -521,6 +716,7 @@ impl QueryEngine {
                 if self.is_cancelled() {
                     tracing::info!(turn, "流式查询被取消（消费流过程中）");
                     let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                    Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                     return Ok(());
                 }
 
@@ -591,6 +787,20 @@ impl QueryEngine {
             self.total_usage.input_tokens += stream_usage.input_tokens;
             self.total_usage.output_tokens += stream_usage.output_tokens;
 
+            trace
+                .emit(
+                    &event_tx,
+                    "llm_response",
+                    Some(turn),
+                    serde_json::json!({
+                        "stop_reason": format!("{:?}", stop_reason),
+                        "content_blocks": content_blocks.len(),
+                        "input_tokens": stream_usage.input_tokens,
+                        "output_tokens": stream_usage.output_tokens,
+                    }),
+                )
+                .await;
+
             // 发送状态事件
             let _ = event_tx.send(QueryEvent::Status(format!("轮次 {}: {} tokens", turn,
                 self.total_usage.input_tokens + self.total_usage.output_tokens))).await;
@@ -610,6 +820,7 @@ impl QueryEngine {
                         stop_reason: StopReason::EndTurn,
                         usage: self.total_usage.clone(),
                     }).await;
+                    Self::emit_trace_end(&event_tx, &trace, "end_turn", Some(turn)).await;
                     return Ok(());
                 }
                 StopReason::MaxTokens => {
@@ -619,6 +830,7 @@ impl QueryEngine {
                         stop_reason: StopReason::MaxTokens,
                         usage: self.total_usage.clone(),
                     }).await;
+                    Self::emit_trace_end(&event_tx, &trace, "max_tokens", Some(turn)).await;
                     return Ok(());
                 }
                 StopReason::ToolUse => {
@@ -628,6 +840,7 @@ impl QueryEngine {
                     if self.is_cancelled() {
                         tracing::info!(turn, "流式查询被取消（工具执行前）");
                         let _ = event_tx.send(QueryEvent::Status("查询已被用户取消".to_string())).await;
+                        Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                         return Ok(());
                     }
 
@@ -636,6 +849,8 @@ impl QueryEngine {
                         &content_blocks,
                         &event_tx,
                         config.concurrent_tools,
+                        &trace,
+                        turn,
                     ).await;
 
                     let tool_result_blocks: Vec<ContentBlock> = tool_results
@@ -660,6 +875,7 @@ impl QueryEngine {
                 }
                 StopReason::Cancelled => {
                     let _ = event_tx.send(QueryEvent::Status("查询已被取消".to_string())).await;
+                    Self::emit_trace_end(&event_tx, &trace, "cancelled", Some(turn)).await;
                     return Ok(());
                 }
                 _ => {
@@ -668,6 +884,7 @@ impl QueryEngine {
                         stop_reason: stop_reason.clone(),
                         usage: self.total_usage.clone(),
                     }).await;
+                    Self::emit_trace_end(&event_tx, &trace, "end_turn_other", Some(turn)).await;
                     return Ok(());
                 }
             }
@@ -758,6 +975,8 @@ impl QueryEngine {
         response: &LlmResponse,
         event_tx: &mpsc::Sender<QueryEvent>,
         concurrent_tools: bool,
+        trace: &TraceEmitter,
+        turn: u32,
     ) -> Vec<(String, pa_core::ToolResult)> {
         let tool_uses = response.tool_uses();
         if tool_uses.is_empty() {
@@ -774,7 +993,8 @@ impl QueryEngine {
             })
             .collect();
 
-        self.execute_tool_calls(tool_calls, event_tx, concurrent_tools).await
+        self.execute_tool_calls(tool_calls, event_tx, concurrent_tools, trace, turn)
+            .await
     }
 
     /// 从 ContentBlock 列表中执行工具调用（流式模式使用）
@@ -786,6 +1006,8 @@ impl QueryEngine {
         content_blocks: &[ContentBlock],
         event_tx: &mpsc::Sender<QueryEvent>,
         concurrent_tools: bool,
+        trace: &TraceEmitter,
+        turn: u32,
     ) -> Vec<(String, pa_core::ToolResult)> {
         let tool_calls: Vec<(String, String, serde_json::Value)> = content_blocks
             .iter()
@@ -800,7 +1022,8 @@ impl QueryEngine {
             return Vec::new();
         }
 
-        self.execute_tool_calls(tool_calls, event_tx, concurrent_tools).await
+        self.execute_tool_calls(tool_calls, event_tx, concurrent_tools, trace, turn)
+            .await
     }
 
     /// 执行工具调用的核心实现
@@ -812,12 +1035,26 @@ impl QueryEngine {
         tool_calls: Vec<(String, String, serde_json::Value)>,
         event_tx: &mpsc::Sender<QueryEvent>,
         concurrent_tools: bool,
+        trace: &TraceEmitter,
+        turn: u32,
     ) -> Vec<(String, pa_core::ToolResult)> {
         tracing::info!(tool_count = tool_calls.len(), "执行工具");
 
+        let names: Vec<String> = tool_calls.iter().map(|(_, n, _)| n.clone()).collect();
+        trace
+            .emit(
+                event_tx,
+                "tools_batch",
+                Some(turn),
+                serde_json::json!({ "tools": names, "count": tool_calls.len() }),
+            )
+            .await;
+
         if !concurrent_tools || tool_calls.len() == 1 {
             // 不启用并发或只有一个工具，直接顺序执行
-            return self.execute_tools_sequential(&tool_calls, event_tx).await;
+            return self
+                .execute_tools_sequential(&tool_calls, event_tx, trace, turn)
+                .await;
         }
 
         // 分组：并发安全 vs 顺序执行
@@ -849,15 +1086,49 @@ impl QueryEngine {
 
         if !concurrent_group.is_empty() {
             let mut futures = Vec::new();
+            let approval_for_parallel = self.approval_provider.clone();
 
             for (idx, id, name, input) in concurrent_group {
                 let event_tx = event_tx.clone();
                 let registry = &self.tool_registry;
                 let permission_checker = &self.permission_checker;
+                let trace = trace.clone();
+                let approval = approval_for_parallel.clone();
 
                 futures.push(async move {
+                    trace
+                        .emit(
+                            &event_tx,
+                            "permission_check",
+                            Some(turn),
+                            serde_json::json!({
+                                "tool": &name,
+                                "tool_id": &id,
+                                "input": QueryEngine::summarize_tool_input(&name, &input),
+                            }),
+                        )
+                        .await;
+
                     // 权限检查
                     let permission = permission_checker.check(&name, &input);
+                    let perm_json = match &permission {
+                        PermissionDecision::Allow => serde_json::json!({"decision": "allow"}),
+                        PermissionDecision::Deny { reason } => {
+                            serde_json::json!({"decision": "deny", "reason": reason})
+                        }
+                        PermissionDecision::Ask { prompt } => {
+                            serde_json::json!({"decision": "ask", "prompt": prompt})
+                        }
+                    };
+                    trace
+                        .emit(
+                            &event_tx,
+                            "permission_result",
+                            Some(turn),
+                            serde_json::json!({ "tool": &name, "tool_id": &id, "detail": perm_json }),
+                        )
+                        .await;
+
                     match permission {
                         PermissionDecision::Deny { reason } => {
                             let _ = event_tx.send(QueryEvent::ToolEnd {
@@ -869,13 +1140,58 @@ impl QueryEngine {
                             return (idx, id.clone(), pa_core::ToolResult::error(&id, &name, format!("权限拒绝: {}", reason)));
                         }
                         PermissionDecision::Ask { prompt } => {
-                            let _ = event_tx.send(QueryEvent::ToolEnd {
-                                tool_name: name.clone(),
-                                tool_id: id.clone(),
-                                result: format!("需要确认: {}", prompt),
-                                is_error: true,
-                            }).await;
-                            return (idx, id.clone(), pa_core::ToolResult::error(&id, &name, format!("需要确认: {}", prompt)));
+                            match QueryEngine::resolve_ask_with_provider(
+                                approval.as_ref(),
+                                &name,
+                                &id,
+                                &input,
+                                prompt,
+                                &trace,
+                                turn,
+                                &event_tx,
+                            )
+                            .await
+                            {
+                                AskResolution::Proceed => {}
+                                AskResolution::DenyUser => {
+                                    let _ = event_tx
+                                        .send(QueryEvent::ToolEnd {
+                                            tool_name: name.clone(),
+                                            tool_id: id.clone(),
+                                            result: "用户已拒绝该工具调用".into(),
+                                            is_error: true,
+                                        })
+                                        .await;
+                                    return (
+                                        idx,
+                                        id.clone(),
+                                        pa_core::ToolResult::error(
+                                            &id,
+                                            &name,
+                                            "用户已拒绝该工具调用",
+                                        ),
+                                    );
+                                }
+                                AskResolution::LegacyNeedConfirm { prompt } => {
+                                    let _ = event_tx
+                                        .send(QueryEvent::ToolEnd {
+                                            tool_name: name.clone(),
+                                            tool_id: id.clone(),
+                                            result: format!("需要确认: {}", prompt),
+                                            is_error: true,
+                                        })
+                                        .await;
+                                    return (
+                                        idx,
+                                        id.clone(),
+                                        pa_core::ToolResult::error(
+                                            &id,
+                                            &name,
+                                            format!("需要确认: {}", prompt),
+                                        ),
+                                    );
+                                }
+                            }
                         }
                         PermissionDecision::Allow => {}
                     }
@@ -893,6 +1209,19 @@ impl QueryEngine {
                         Ok(r) => r.clone(),
                         Err(e) => pa_core::ToolResult::error(&id, &name, e.to_string()),
                     };
+
+                    trace
+                        .emit(
+                            &event_tx,
+                            "tool_executed",
+                            Some(turn),
+                            serde_json::json!({
+                                "tool": &name,
+                                "tool_id": &id,
+                                "result": QueryEngine::summarize_tool_result(&tool_result.content, tool_result.is_error),
+                            }),
+                        )
+                        .await;
 
                     // 发送工具结束事件
                     let _ = event_tx.send(QueryEvent::ToolEnd {
@@ -917,6 +1246,8 @@ impl QueryEngine {
             let sequential_results = self.execute_tools_sequential_inner(
                 &sequential_group,
                 event_tx,
+                trace,
+                turn,
             ).await;
 
             for (idx, id, tool_result) in sequential_results {
@@ -941,6 +1272,8 @@ impl QueryEngine {
         &self,
         tool_calls: &[(String, String, serde_json::Value)],
         event_tx: &mpsc::Sender<QueryEvent>,
+        trace: &TraceEmitter,
+        turn: u32,
     ) -> Vec<(String, pa_core::ToolResult)> {
         // 将 tool_calls 转换为带索引的格式
         let indexed: Vec<(usize, String, String, serde_json::Value)> = tool_calls
@@ -949,7 +1282,7 @@ impl QueryEngine {
             .map(|(idx, (id, name, input))| (idx, id.clone(), name.clone(), input.clone()))
             .collect();
 
-        self.execute_tools_sequential_inner(&indexed, event_tx)
+        self.execute_tools_sequential_inner(&indexed, event_tx, trace, turn)
             .await
             .into_iter()
             .map(|(_, id, result)| (id, result))
@@ -961,19 +1294,45 @@ impl QueryEngine {
         &self,
         tool_calls: &[(usize, String, String, serde_json::Value)],
         event_tx: &mpsc::Sender<QueryEvent>,
+        trace: &TraceEmitter,
+        turn: u32,
     ) -> Vec<(usize, String, pa_core::ToolResult)> {
         let mut results = Vec::new();
 
         for (idx, id, name, input) in tool_calls {
-            // 发送工具开始事件
-            let _ = event_tx.send(QueryEvent::ToolStart {
-                tool_name: name.clone(),
-                tool_id: id.clone(),
-                input_json: input.clone(),
-            }).await;
+            trace
+                .emit(
+                    event_tx,
+                    "permission_check",
+                    Some(turn),
+                    serde_json::json!({
+                        "tool": name,
+                        "tool_id": id,
+                        "input": Self::summarize_tool_input(name, input),
+                    }),
+                )
+                .await;
 
             // 权限检查
             let permission = self.permission_checker.check(name, input);
+            let perm_json = match &permission {
+                PermissionDecision::Allow => serde_json::json!({"decision": "allow"}),
+                PermissionDecision::Deny { reason } => {
+                    serde_json::json!({"decision": "deny", "reason": reason})
+                }
+                PermissionDecision::Ask { prompt } => {
+                    serde_json::json!({"decision": "ask", "prompt": prompt})
+                }
+            };
+            trace
+                .emit(
+                    event_tx,
+                    "permission_result",
+                    Some(turn),
+                    serde_json::json!({ "tool": name, "tool_id": id, "detail": perm_json }),
+                )
+                .await;
+
             match permission {
                 PermissionDecision::Allow => {}
                 PermissionDecision::Deny { reason } => {
@@ -988,17 +1347,68 @@ impl QueryEngine {
                     continue;
                 }
                 PermissionDecision::Ask { prompt } => {
-                    let _ = event_tx.send(QueryEvent::ToolEnd {
-                        tool_name: name.clone(),
-                        tool_id: id.clone(),
-                        result: format!("需要确认: {}", prompt),
-                        is_error: true,
-                    }).await;
-                    results.push((*idx, id.clone(),
-                        pa_core::ToolResult::error(id, name, format!("需要确认: {}", prompt))));
-                    continue;
+                    match Self::resolve_ask_with_provider(
+                        self.approval_provider.as_ref(),
+                        name,
+                        id,
+                        input,
+                        prompt,
+                        trace,
+                        turn,
+                        event_tx,
+                    )
+                    .await
+                    {
+                        AskResolution::Proceed => {}
+                        AskResolution::DenyUser => {
+                            let _ = event_tx
+                                .send(QueryEvent::ToolEnd {
+                                    tool_name: name.clone(),
+                                    tool_id: id.clone(),
+                                    result: "用户已拒绝该工具调用".into(),
+                                    is_error: true,
+                                })
+                                .await;
+                            results.push((
+                                *idx,
+                                id.clone(),
+                                pa_core::ToolResult::error(
+                                    id,
+                                    name,
+                                    "用户已拒绝该工具调用",
+                                ),
+                            ));
+                            continue;
+                        }
+                        AskResolution::LegacyNeedConfirm { prompt } => {
+                            let _ = event_tx
+                                .send(QueryEvent::ToolEnd {
+                                    tool_name: name.clone(),
+                                    tool_id: id.clone(),
+                                    result: format!("需要确认: {}", prompt),
+                                    is_error: true,
+                                })
+                                .await;
+                            results.push((
+                                *idx,
+                                id.clone(),
+                                pa_core::ToolResult::error(
+                                    id,
+                                    name,
+                                    format!("需要确认: {}", prompt),
+                                ),
+                            ));
+                            continue;
+                        }
+                    }
                 }
             }
+
+            let _ = event_tx.send(QueryEvent::ToolStart {
+                tool_name: name.clone(),
+                tool_id: id.clone(),
+                input_json: input.clone(),
+            }).await;
 
             // 执行工具
             let result = self.tool_registry.execute(name, id, input.clone()).await;
@@ -1006,6 +1416,19 @@ impl QueryEngine {
                 Ok(r) => r.clone(),
                 Err(e) => pa_core::ToolResult::error(id, name, e.to_string()),
             };
+
+            trace
+                .emit(
+                    event_tx,
+                    "tool_executed",
+                    Some(turn),
+                    serde_json::json!({
+                        "tool": name,
+                        "tool_id": id,
+                        "result": Self::summarize_tool_result(&tool_result.content, tool_result.is_error),
+                    }),
+                )
+                .await;
 
             // 发送工具结束事件
             let _ = event_tx.send(QueryEvent::ToolEnd {
@@ -1024,6 +1447,63 @@ impl QueryEngine {
     // ========================================================================
     // 辅助方法
     // ========================================================================
+
+    async fn emit_trace_end(
+        event_tx: &mpsc::Sender<QueryEvent>,
+        trace: &TraceEmitter,
+        outcome: &str,
+        last_turn: Option<u32>,
+    ) {
+        let _ = event_tx
+            .send(QueryEvent::TraceEnded {
+                trace_id: trace.trace_id().to_string(),
+                outcome: outcome.to_string(),
+                last_turn,
+            })
+            .await;
+        trace
+            .emit(
+                event_tx,
+                "trace_end",
+                last_turn,
+                serde_json::json!({ "outcome": outcome }),
+            )
+            .await;
+    }
+
+    fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> serde_json::Value {
+        match tool_name {
+            "bash" => serde_json::json!({ "command": input.get("command") }),
+            "write_file" => serde_json::json!({
+                "path": input.get("path"),
+                "content_len": input["content"].as_str().map(|s| s.len()),
+            }),
+            "read_file" | "search" | "glob" => serde_json::json!({
+                "path": input.get("path").or_else(|| input.get("pattern")),
+            }),
+            "web_fetch" => serde_json::json!({ "url": input.get("url") }),
+            "memory_store" => serde_json::json!({
+                "content_len": input["content"].as_str().map(|s| s.len()),
+            }),
+            _ => serde_json::json!({
+                "keys": input.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()),
+            }),
+        }
+    }
+
+    fn summarize_tool_result(content: &str, is_error: bool) -> serde_json::Value {
+        const MAX: usize = 2000;
+        let preview = if content.len() <= MAX {
+            content.to_string()
+        } else {
+            format!("{}… [截断，总 {} 字符]", &content[..MAX], content.len())
+        };
+        serde_json::json!({
+            "is_error": is_error,
+            "chars": content.len(),
+            "preview": preview,
+        })
+    }
 
     /// 构建系统提示（含记忆上下文）
     async fn build_system_prompt(&mut self, config: &QueryConfig) -> String {

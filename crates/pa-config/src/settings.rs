@@ -26,6 +26,12 @@ pub struct Settings {
     pub task: TaskSettings,
     /// 告警配置
     pub alert: AlertSettings,
+    /// 安全与权限收窄（工作区、外联、删除等）
+    #[serde(default)]
+    pub security: SecuritySettings,
+    /// 可观测性与执行审计
+    #[serde(default)]
+    pub observability: ObservabilitySettings,
 }
 
 impl Default for Settings {
@@ -40,6 +46,50 @@ impl Default for Settings {
             feishu: None,
             task: TaskSettings::default(),
             alert: AlertSettings::default(),
+            security: SecuritySettings::default(),
+            observability: ObservabilitySettings::default(),
+        }
+    }
+}
+
+/// 安全策略：工作区边界、外发 URL 白名单、删除风险等
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecuritySettings {
+    /// 是否强制文件类工具仅能访问工作区根目录之下
+    pub enforce_workspace: bool,
+    /// 工作区根路径列表（绝对或相对路径）；为空且 `enforce_workspace` 为 true 时，运行时使用进程当前工作目录作为唯一根
+    pub workspace_roots: Vec<String>,
+    /// `web_fetch` URL 前缀白名单；匹配前缀的请求可自动通过权限检查（仍会写入审计日志）
+    pub web_fetch_allow_url_prefixes: Vec<String>,
+    /// 为 true 时：不在白名单中的 `web_fetch` 一律走「需确认」路径（`Ask`）
+    pub strict_web_fetch: bool,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self {
+            enforce_workspace: false,
+            workspace_roots: Vec::new(),
+            web_fetch_allow_url_prefixes: Vec::new(),
+            strict_web_fetch: true,
+        }
+    }
+}
+
+/// 执行过程可观测性与持久化审计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservabilitySettings {
+    /// 是否写入审计日志（JSON Lines）
+    pub audit_log_enabled: bool,
+    /// 审计日志文件路径（追加写入）
+    pub audit_log_path: String,
+}
+
+impl Default for ObservabilitySettings {
+    fn default() -> Self {
+        Self {
+            audit_log_enabled: true,
+            audit_log_path: ".pa/audit/execution.jsonl".into(),
         }
     }
 }
@@ -61,7 +111,7 @@ impl Default for GatewaySettings {
     fn default() -> Self {
         Self {
             bind: "127.0.0.1".into(),
-            port: 18789,
+            port: 19870,
             auth_token: None,
             tailscale_enabled: false,
         }

@@ -2,7 +2,7 @@
 //!
 //! 提供命令行参数的解析功能，支持以下命令和选项：
 //! - `start` - 启动 Gateway 服务
-//! - `query <prompt>` - 单次查询模式
+//! - `query <prompt>` - 单次查询模式（需确认的工具会在终端提示 y/N）
 //! - `version` / `--version` / `-v` - 显示版本信息
 //! - `--config` / `-c <path>` - 指定配置文件路径
 //! - `--verbose` - 启用详细日志

@@ -1,6 +1,7 @@
 //! WebSocket 服务器与 HTTP REST API
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -9,17 +10,21 @@ use axum::{
     routing::{get, post},
     extract::{
         ws::{WebSocket, WebSocketUpgrade, Message as WsMessage},
-        Path, State,
+        Path, Request, State,
     },
-    response::{Response, IntoResponse, Json},
-    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Json, Response},
+    http::{Method, StatusCode},
 };
+use crate::auth::{extract_gateway_credential, gateway_auth_enabled, verify_gateway_credential};
 use tower_http::cors::CorsLayer;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use serde_json::json;
 use pa_core::CoreError;
 use pa_config::Settings;
 use pa_task::TaskManager;
+use pa_query::SharedApprovalBroker;
 use pa_agent::Agent;
 use crate::client::ClientRegistry;
 use crate::events::EventBus;
@@ -41,6 +46,8 @@ pub struct AppState {
     pub agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
     /// 指标收集器
     pub metrics: Arc<MetricsCollector>,
+    /// 工具人工批准（可选）
+    pub approval_broker: Option<Arc<SharedApprovalBroker>>,
 }
 
 /// Gateway 服务器
@@ -57,6 +64,7 @@ impl GatewayServer {
         settings: Settings,
         task_manager: Arc<TaskManager>,
         agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
+        approval_broker: Option<Arc<SharedApprovalBroker>>,
     ) -> Self {
         Self {
             addr: addr.into().parse().expect("Invalid address"),
@@ -67,6 +75,7 @@ impl GatewayServer {
                 task_manager,
                 agents_map,
                 metrics: Arc::new(MetricsCollector::new()),
+                approval_broker,
             },
         }
     }
@@ -90,6 +99,16 @@ impl GatewayServer {
             // Agent 管理 API
             .route("/api/agents", get(list_agents_handler))
             .route("/api/agents/:id/status", get(get_agent_status_handler))
+            .route("/api/audit/trace/:trace_id", get(get_audit_trace_handler))
+            .route("/api/approvals/pending", get(list_pending_approvals_handler))
+            .route(
+                "/api/approvals/:approval_id/respond",
+                post(respond_approval_handler),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                gateway_auth_middleware,
+            ))
             .layer(CorsLayer::permissive())
             .with_state(state);
 
@@ -107,6 +126,32 @@ impl GatewayServer {
 
         Ok(())
     }
+}
+
+/// 当 `[gateway].auth_token` 非空时，除 `OPTIONS`（CORS 预检）与 `GET /health` 外均需携带有效凭证。
+///
+/// 凭证：`Authorization: Bearer …`、`X-PA-Token`、或查询参数 `token=`（供浏览器 WebSocket 使用）。
+async fn gateway_auth_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if gateway_auth_skip(&request) {
+        return next.run(request).await;
+    }
+    if !gateway_auth_enabled(&state.settings) {
+        return next.run(request).await;
+    }
+    let uri = request.uri().clone();
+    let cred = extract_gateway_credential(request.headers(), &uri);
+    if !verify_gateway_credential(&state.settings, cred.as_deref()) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    next.run(request).await
+}
+
+fn gateway_auth_skip(request: &Request) -> bool {
+    *request.method() == Method::OPTIONS || request.uri().path() == "/health"
 }
 
 // ============================================================================
@@ -516,6 +561,40 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
             }
         }
 
+        // 待处理工具批准列表（Web 轮询 / 第二连接）
+        "approvals_pending" => {
+            match &state.approval_broker {
+                Some(b) => {
+                    let pending = b.list_pending().await;
+                    MethodResponse::success(&call_id, json!({ "pending": pending }))
+                }
+                None => MethodResponse::error(&call_id, "未启用人工批准 Broker"),
+            }
+        }
+
+        // 响应工具批准：params: { "approval_id": "...", "approved": true|false }
+        "approval_respond" => {
+            let approval_id = params
+                .get("approval_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let approved = params
+                .get("approved")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if approval_id.is_empty() {
+                MethodResponse::error(&call_id, "缺少 approval_id")
+            } else {
+                match &state.approval_broker {
+                    Some(b) => match b.respond(approval_id, approved).await {
+                        Ok(()) => MethodResponse::success(&call_id, json!({ "ok": true })),
+                        Err(e) => MethodResponse::error(&call_id, e),
+                    },
+                    None => MethodResponse::error(&call_id, "未启用人工批准 Broker"),
+                }
+            }
+        }
+
         // 未知方法
         _ => {
             MethodResponse::error(&call_id, format!("未知方法: {}", method))
@@ -525,4 +604,83 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
     serde_json::to_string(&response).unwrap_or_else(|_| {
         json!({"error": "序列化响应失败"}).to_string()
     })
+}
+
+/// 按 `trace_id` 读取审计日志中的步骤（JSON 数组，顺序即执行顺序）
+async fn get_audit_trace_handler(
+    Path(trace_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let obs = &state.settings.observability;
+    if !obs.audit_log_enabled {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "audit_log_enabled 为 false".to_string(),
+        ));
+    }
+
+    let path = std::path::PathBuf::from(&obs.audit_log_path);
+    let tid = trace_id.clone();
+    let steps = tokio::task::spawn_blocking(move || read_audit_steps_for_trace(&path, &tid))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(json!({
+        "trace_id": trace_id,
+        "steps": steps,
+    })))
+}
+
+/// 列出待人工批准的工具调用
+async fn list_pending_approvals_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let Some(b) = state.approval_broker.as_ref() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let pending = b.list_pending().await;
+    Ok(Json(json!({ "pending": pending })))
+}
+
+#[derive(Deserialize)]
+struct ApprovalRespondBody {
+    approved: bool,
+}
+
+/// 提交批准或拒绝
+async fn respond_approval_handler(
+    Path(approval_id): Path<String>,
+    State(state): State<AppState>,
+    Json(body): Json<ApprovalRespondBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let Some(b) = state.approval_broker.as_ref() else {
+        return Err((StatusCode::NOT_FOUND, "未配置批准 Broker".into()));
+    };
+    b.respond(&approval_id, body.approved)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    Ok(Json(json!({ "ok": true, "approval_id": approval_id })))
+}
+
+fn read_audit_steps_for_trace(path: &Path, trace_id: &str) -> Result<Vec<serde_json::Value>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    const MAX: usize = 32 * 1024 * 1024;
+    if data.len() > MAX {
+        return Err(format!("审计文件超过 {} 字节上限", MAX));
+    }
+    let mut out = Vec::new();
+    for line in data.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        if v.get("trace_id").and_then(|x| x.as_str()) == Some(trace_id) {
+            out.push(v);
+        }
+    }
+    Ok(out)
 }

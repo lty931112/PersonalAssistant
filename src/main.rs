@@ -10,6 +10,7 @@
 mod cli;
 mod daemon;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::path::Path;
 
@@ -188,16 +189,35 @@ fn create_tool_registry() -> ToolRegistry {
 // 查询引擎创建
 // ============================================================
 
-/// 创建查询引擎
+/// 创建查询引擎（注入安全策略、审计与人工批准）
 fn create_query_engine(
     llm_client: Box<dyn pa_llm::LlmClientTrait>,
     memory: MagmaMemoryEngine,
     tool_registry: ToolRegistry,
+    settings: &Settings,
+    approval: Option<Arc<dyn pa_query::ToolApprovalProvider>>,
 ) -> Result<QueryEngine> {
-    let engine = QueryEngine::new(llm_client, memory, tool_registry)
-        .map_err(|e| anyhow::anyhow!("创建查询引擎失败: {}", e))?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let policy = pa_query::SecurityPolicy::from_settings(&settings.security, &cwd);
+    let checker = pa_query::PermissionChecker::with_policy(policy, cwd);
 
-    info!("查询引擎已创建");
+    let audit = if settings.observability.audit_log_enabled {
+        let p = PathBuf::from(&settings.observability.audit_log_path);
+        Some(Arc::new(
+            pa_query::AuditSink::open(&p)
+                .map_err(|e| anyhow::anyhow!("打开审计日志 {} 失败: {}", p.display(), e))?,
+        ))
+    } else {
+        None
+    };
+
+    let engine = QueryEngine::new(llm_client, memory, tool_registry)
+        .map_err(|e| anyhow::anyhow!("创建查询引擎失败: {}", e))?
+        .with_permission_checker(checker)
+        .with_audit_sink(audit)
+        .with_approval_provider(approval);
+
+    info!("查询引擎已创建（安全策略 + 审计 + 人工批准通道已按配置加载）");
     Ok(engine)
 }
 
@@ -371,8 +391,18 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
         }
     }
 
+    // 6.5 工具人工批准（HTTP / WebSocket 提交决策，与 QueryEngine 共用）
+    let approval_broker = Arc::new(pa_query::SharedApprovalBroker::new());
+    let approval_dyn: Arc<dyn pa_query::ToolApprovalProvider> = approval_broker.clone();
+
     // 7. 创建 QueryEngine
-    let query_engine = create_query_engine(llm_client, memory, tool_registry)?;
+    let query_engine = create_query_engine(
+        llm_client,
+        memory,
+        tool_registry,
+        settings,
+        Some(approval_dyn),
+    )?;
 
     // 8. 创建 Agent
     let agent_config = AgentConfig::new("default", "默认智能体")
@@ -400,6 +430,7 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
     let mut gateway = Gateway::with_task_store(settings.clone(), task_store_for_gateway)
         .await
         .map_err(|e| anyhow::anyhow!("创建 Gateway 失败: {}", e))?;
+    gateway = gateway.with_approval_broker(approval_broker);
 
     // 9.5 初始化告警管理器
     if settings.alert.enabled {
@@ -512,7 +543,15 @@ async fn run_query(settings: Settings, cli: &Config, prompt: &str) -> Result<()>
     }
 
     // 6. 创建 QueryEngine
-    let mut query_engine = create_query_engine(llm_client, memory, tool_registry)?;
+    let cli_approval: Arc<dyn pa_query::ToolApprovalProvider> =
+        Arc::new(pa_query::CliToolApproval::new());
+    let mut query_engine = create_query_engine(
+        llm_client,
+        memory,
+        tool_registry,
+        settings,
+        Some(cli_approval),
+    )?;
 
     // 7. 执行查询
     let query_config = create_query_config(&settings, cli);
@@ -631,9 +670,9 @@ async fn init_feishu_channel() -> Result<()> {
 
     // 设置监听端口（可通过环境变量覆盖）
     let port: u16 = std::env::var("FEISHU_PORT")
-        .unwrap_or_else(|_| "8080".to_string())
+        .unwrap_or_else(|_| "19871".to_string())
         .parse()
-        .unwrap_or(8080);
+        .unwrap_or(19871);
 
     let channel = FeishuChannel::new(config).with_port(port);
     channel.start_server().await

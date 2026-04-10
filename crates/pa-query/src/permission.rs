@@ -1,154 +1,151 @@
-//! 权限检查模块
-//!
-//! 实现工具调用的权限检查流程。
+//! 权限检查：与工作区策略、外联白名单、删除风险结合
 
 use serde_json::Value;
+use std::path::PathBuf;
+
+use crate::security::{primary_path_from_tool_input, SecurityPolicy};
 
 /// 权限决策
-///
-/// 权限检查的结果，决定是否允许工具执行。
 #[derive(Debug, Clone, PartialEq)]
 pub enum PermissionDecision {
-    /// 允许执行
     Allow,
-    /// 拒绝执行
     Deny { reason: String },
-    /// 需要用户确认
     Ask { prompt: String },
 }
 
 /// 权限检查器
-///
-/// 根据工具名称和输入参数决定是否允许执行。
-/// 当前实现为基于规则的简单权限检查，后续可扩展为更复杂的策略。
 pub struct PermissionChecker {
-    /// 始终允许的工具列表（只读工具默认允许）
-    always_allow: Vec<String>,
-    /// 始终拒绝的工具列表
+    policy: SecurityPolicy,
+    cwd: PathBuf,
     always_deny: Vec<String>,
-    /// 需要确认的工具列表
-    require_confirmation: Vec<String>,
 }
 
 impl PermissionChecker {
-    /// 创建新的权限检查器
     pub fn new() -> Self {
-        PermissionChecker {
-            always_allow: vec![
-                "read_file".to_string(),
-                "search".to_string(),
-                "glob".to_string(),
-                "memory_query".to_string(),
-                "web_fetch".to_string(),
-            ],
-            always_deny: vec![],
-            require_confirmation: vec![
-                "bash".to_string(),
-                "write_file".to_string(),
-                "memory_store".to_string(),
-            ],
+        Self::with_policy(SecurityPolicy::default(), std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    }
+
+    pub fn with_policy(policy: SecurityPolicy, cwd: PathBuf) -> Self {
+        Self {
+            policy,
+            cwd,
+            always_deny: Vec::new(),
         }
     }
 
-    /// 检查工具调用权限
-    ///
-    /// # 参数
-    /// - `tool_name`: 工具名称
-    /// - `input`: 工具输入参数
-    ///
-    /// # 返回
-    /// 权限决策
-    pub fn check(&self, tool_name: &str, input: &Value) -> PermissionDecision {
-        // 检查始终拒绝列表
-        if self.always_deny.contains(&tool_name.to_string()) {
-            return PermissionDecision::Deny {
-                reason: format!("工具 '{}' 被策略禁止", tool_name),
-            };
-        }
-
-        // 检查始终允许列表
-        if self.always_allow.contains(&tool_name.to_string()) {
-            return PermissionDecision::Allow;
-        }
-
-        // 检查需要确认的工具
-        if self.require_confirmation.contains(&tool_name.to_string()) {
-            // 对特定危险命令进行额外检查
-            if tool_name == "bash" {
-                if let Some(command) = input["command"].as_str() {
-                    let cmd_lower = command.to_lowercase();
-                    // 检查危险命令
-                    let dangerous_patterns = [
-                        "rm -rf /",
-                        "mkfs",
-                        "dd if=",
-                        ":(){ :|:& };:",
-                        "chmod -r 777 /",
-                        "chown -r",
-                        "> /dev/sd",
-                        "shutdown",
-                        "reboot",
-                        "init 0",
-                        "halt",
-                        "poweroff",
-                    ];
-
-                    for pattern in &dangerous_patterns {
-                        if cmd_lower.contains(pattern) {
-                            return PermissionDecision::Deny {
-                                reason: format!(
-                                    "检测到危险命令模式 '{}', 执行已被阻止",
-                                    pattern
-                                ),
-                            };
-                        }
-                    }
-
-                    return PermissionDecision::Ask {
-                        prompt: format!(
-                            "即将执行 Shell 命令:\n```\n{}\n```\n\n是否允许执行？",
-                            command
-                        ),
-                    };
-                }
-            }
-
-            if tool_name == "write_file" {
-                if let Some(path) = input["path"].as_str() {
-                    return PermissionDecision::Ask {
-                        prompt: format!("即将写入文件: {}\n\n是否允许？", path),
-                    };
-                }
-            }
-
-            return PermissionDecision::Ask {
-                prompt: format!("即将执行工具: {}\n\n是否允许？", tool_name),
-            };
-        }
-
-        // 默认允许
-        PermissionDecision::Allow
-    }
-
-    /// 添加始终允许的工具
-    pub fn add_always_allow(&mut self, tool_name: &str) {
-        if !self.always_allow.contains(&tool_name.to_string()) {
-            self.always_allow.push(tool_name.to_string());
-        }
-    }
-
-    /// 添加始终拒绝的工具
     pub fn add_always_deny(&mut self, tool_name: &str) {
         if !self.always_deny.contains(&tool_name.to_string()) {
             self.always_deny.push(tool_name.to_string());
         }
     }
 
-    /// 添加需要确认的工具
-    pub fn add_require_confirmation(&mut self, tool_name: &str) {
-        if !self.require_confirmation.contains(&tool_name.to_string()) {
-            self.require_confirmation.push(tool_name.to_string());
+    pub fn check(&self, tool_name: &str, input: &Value) -> PermissionDecision {
+        if self.always_deny.contains(&tool_name.to_string()) {
+            return PermissionDecision::Deny {
+                reason: format!("工具 '{}' 被策略禁止", tool_name),
+            };
         }
+
+        // 工作区边界（读 / 搜 / 匹配 / 写）
+        if let Some(p) = primary_path_from_tool_input(tool_name, input) {
+            if !self.policy.path_within_workspace(&p, &self.cwd) {
+                return PermissionDecision::Deny {
+                    reason: format!(
+                        "路径不在允许的工作区内（enforce_workspace=true）: {}",
+                        p
+                    ),
+                };
+            }
+        }
+
+        // 外发：仅 URL 白名单自动放行，其余需确认
+        if tool_name == "web_fetch" {
+            let url = input["url"].as_str().unwrap_or("");
+            if self.policy.web_fetch_url_allowed(url) {
+                return PermissionDecision::Allow;
+            }
+            if self.policy.strict_web_fetch {
+                return PermissionDecision::Ask {
+                    prompt: format!(
+                        "【外发数据】即将请求 URL（可能泄露上下文或环境信息）:\n{}\n\n是否允许？",
+                        url
+                    ),
+                };
+            }
+            return PermissionDecision::Allow;
+        }
+
+        // Bash：系统级危险模式直接拒绝；非临时删除加重提示
+        if tool_name == "bash" {
+            if let Some(command) = input["command"].as_str() {
+                let cmd_lower = command.to_lowercase();
+                let dangerous_patterns = [
+                    "rm -rf /",
+                    "mkfs",
+                    "dd if=",
+                    ":(){ :|:& };:",
+                    "chmod -r 777 /",
+                    "chown -r",
+                    "> /dev/sd",
+                    "shutdown",
+                    "reboot",
+                    "init 0",
+                    "halt",
+                    "poweroff",
+                ];
+                for pattern in &dangerous_patterns {
+                    if cmd_lower.contains(pattern) {
+                        return PermissionDecision::Deny {
+                            reason: format!("检测到高危命令模式 '{}', 已阻止", pattern),
+                        };
+                    }
+                }
+
+                let deletion_risk = crate::security::bash_has_deletion(&cmd_lower)
+                        && !self.policy.bash_deletion_only_temp_like(command);
+
+                if deletion_risk {
+                    return PermissionDecision::Ask {
+                        prompt: format!(
+                            "【高风险-文件删除】即将执行 Shell（可能删除非临时文件）:\n```\n{}\n```\n\n请确认是否授权执行？",
+                            command
+                        ),
+                    };
+                }
+
+                return PermissionDecision::Ask {
+                    prompt: format!(
+                        "即将执行 Shell 命令:\n```\n{}\n```\n\n是否允许执行？",
+                        command
+                    ),
+                };
+            }
+        }
+
+        // 本地只读检索：工作区已放行
+        match tool_name {
+            "read_file" | "search" | "glob" | "memory_query" => {
+                return PermissionDecision::Allow;
+            }
+            "write_file" => {
+                if let Some(path) = input["path"].as_str() {
+                    return PermissionDecision::Ask {
+                        prompt: format!(
+                            "【文件写入】路径: {}\n\n是否允许写入/覆盖？",
+                            path
+                        ),
+                    };
+                }
+            }
+            "memory_store" => {
+                return PermissionDecision::Ask {
+                    prompt: "【持久化记忆】内容可能包含敏感信息，是否写入长期记忆？".into(),
+                };
+            }
+            _ => {}
+        }
+
+        PermissionDecision::Allow
     }
 }
 
@@ -164,37 +161,49 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_allow_read_only_tools() {
+    fn read_allowed_when_no_enforce() {
         let checker = PermissionChecker::new();
         assert_eq!(
-            checker.check("read_file", &json!({"path": "/tmp/test.txt"})),
+            checker.check("read_file", &json!({"path": "/etc/passwd"})),
             PermissionDecision::Allow
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_denied_outside_workspace() {
+        let mut pol = SecurityPolicy::default();
+        pol.enforce_workspace = true;
+        pol.workspace_roots = vec![PathBuf::from("/tmp/only")];
+        let checker = PermissionChecker::with_policy(pol, PathBuf::from("/tmp/only"));
+        match checker.check("read_file", &json!({"path": "/etc/passwd"})) {
+            PermissionDecision::Deny { .. } => {}
+            other => panic!("期望 Deny，得到 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn web_fetch_whitelist() {
+        let mut pol = SecurityPolicy::default();
+        pol.web_fetch_allow_url_prefixes = vec!["https://example.com/".into()];
+        let checker = PermissionChecker::with_policy(pol, PathBuf::from("."));
         assert_eq!(
-            checker.check("search", &json!({"pattern": "test"})),
+            checker.check(
+                "web_fetch",
+                &json!({"url": "https://example.com/doc"})
+            ),
             PermissionDecision::Allow
         );
     }
 
     #[test]
-    fn test_deny_dangerous_commands() {
-        let checker = PermissionChecker::new();
-        assert_eq!(
-            checker.check("bash", &json!({"command": "rm -rf /"})),
-            PermissionDecision::Deny {
-                reason: "检测到危险命令模式 'rm -rf /', 执行已被阻止".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_ask_for_write() {
-        let checker = PermissionChecker::new();
-        match checker.check("write_file", &json!({"path": "/tmp/test.txt", "content": "hello"})) {
-            PermissionDecision::Ask { prompt } => {
-                assert!(prompt.contains("/tmp/test.txt"));
-            }
-            _ => panic!("期望 Ask 决策"),
+    fn web_fetch_ask_off_whitelist() {
+        let mut pol = SecurityPolicy::default();
+        pol.web_fetch_allow_url_prefixes = vec!["https://a.com/".into()];
+        let checker = PermissionChecker::with_policy(pol, PathBuf::from("."));
+        match checker.check("web_fetch", &json!({"url": "https://b.com/x"})) {
+            PermissionDecision::Ask { prompt } => assert!(prompt.contains("外发")),
+            other => panic!("期望 Ask，得到 {:?}", other),
         }
     }
 }

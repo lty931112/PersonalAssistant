@@ -21,6 +21,13 @@ export default function SettingsPage() {
   const { state, dispatch } = useApp();
   const [apiBaseUrl, setApiBaseUrl] = useState(state.settings.apiBaseUrl);
   const [wsUrl, setWsUrl] = useState(state.settings.wsUrl);
+  const [gatewayToken, setGatewayToken] = useState(state.settings.gatewayToken);
+
+  useEffect(() => {
+    setApiBaseUrl(state.settings.apiBaseUrl);
+    setWsUrl(state.settings.wsUrl);
+    setGatewayToken(state.settings.gatewayToken);
+  }, [state.settings.apiBaseUrl, state.settings.wsUrl, state.settings.gatewayToken]);
   const [healthStatus, setHealthStatus] = useState<'unknown' | 'ok' | 'error'>('unknown');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -80,6 +87,7 @@ export default function SettingsPage() {
     const newSettings = {
       apiBaseUrl: apiBaseUrl.trim(),
       wsUrl: wsUrl.trim(),
+      gatewayToken: gatewayToken.trim(),
       theme: state.theme,
     };
     dispatch({ type: 'SET_SETTINGS', payload: newSettings });
@@ -103,12 +111,14 @@ export default function SettingsPage() {
   /** 重置连接设置 */
   const handleReset = () => {
     const defaults = {
-      apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:18789/api',
-      wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:18789/ws',
+      apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:19870/api',
+      wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:19870/ws',
+      gatewayToken: process.env.NEXT_PUBLIC_GATEWAY_TOKEN || '',
       theme: state.theme,
     };
     setApiBaseUrl(defaults.apiBaseUrl);
     setWsUrl(defaults.wsUrl);
+    setGatewayToken(defaults.gatewayToken);
     dispatch({ type: 'SET_SETTINGS', payload: defaults });
   };
 
@@ -182,15 +192,30 @@ export default function SettingsPage() {
               <div className="mb-4">
                 <label className="block text-sm font-medium text-foreground mb-1.5">后端 API 地址</label>
                 <input type="text" value={apiBaseUrl} onChange={(e) => setApiBaseUrl(e.target.value)}
-                  className="input font-mono text-sm" placeholder="http://localhost:18789/api" />
+                  className="input font-mono text-sm" placeholder="http://localhost:19870/api" />
                 <p className="text-xs text-muted-foreground mt-1">后端 HTTP REST API 的基础地址</p>
               </div>
 
               <div className="mb-4">
                 <label className="block text-sm font-medium text-foreground mb-1.5">WebSocket 地址</label>
                 <input type="text" value={wsUrl} onChange={(e) => setWsUrl(e.target.value)}
-                  className="input font-mono text-sm" placeholder="ws://localhost:18789/ws" />
+                  className="input font-mono text-sm" placeholder="ws://localhost:19870/ws" />
                 <p className="text-xs text-muted-foreground mt-1">后端 WebSocket 服务地址</p>
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-foreground mb-1.5">Gateway 认证令牌</label>
+                <input
+                  type="password"
+                  value={gatewayToken}
+                  onChange={(e) => setGatewayToken(e.target.value)}
+                  className="input font-mono text-sm"
+                  placeholder="与 config 中 [gateway].auth_token / PA_AUTH_TOKEN 一致"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  留空表示未启用服务端认证。启用后 HTTP 使用 Bearer 头，WebSocket 通过 URL 参数 token 传递。
+                </p>
               </div>
 
               <div className="flex items-center gap-3 mb-4">

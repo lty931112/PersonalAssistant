@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import '@/styles/globals.css';
 import { AppProvider } from '@/lib/store';
 import Sidebar from '@/components/Sidebar';
+import ApprovalBar from '@/components/ApprovalBar';
 
 export const metadata: Metadata = {
   title: 'PersonalAssistant - AI 智能助手',
@@ -28,6 +29,7 @@ export default function RootLayout({
             <main className="flex-1 overflow-hidden">
               {children}
             </main>
+            <ApprovalBar />
           </div>
         </AppProvider>
       </body>

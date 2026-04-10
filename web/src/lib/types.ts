@@ -66,7 +66,11 @@ export type QueryEventType =
   | 'TurnComplete'
   | 'Status'
   | 'Error'
-  | 'TokenWarning';
+  | 'TokenWarning'
+  | 'MemoryRetrieved'
+  | 'TraceStarted'
+  | 'TraceEnded'
+  | 'Observability';
 
 /** 查询事件（WebSocket 接收） */
 export interface QueryEvent {
@@ -79,6 +83,14 @@ export interface QueryEvent {
   turn?: number;
   stop_reason?: string;
   message?: string;
+  trace_id?: string;
+  outcome?: string;
+  last_turn?: number;
+  seq?: number;
+  phase?: string;
+  detail?: Record<string, unknown>;
+  context?: string;
+  source?: string;
 }
 
 /** WebSocket 发送的消息 */
@@ -113,10 +125,23 @@ export interface Conversation {
   updatedAt: string;
 }
 
+/** 待人工批准的工具调用（与后端 ToolApprovalRequest 对齐） */
+export interface ToolApprovalRequest {
+  approval_id: string;
+  trace_id: string;
+  turn: number;
+  tool_name: string;
+  tool_id: string;
+  prompt: string;
+  input_summary: Record<string, unknown>;
+}
+
 /** 设置项 */
 export interface AppSettings {
   apiBaseUrl: string;
   wsUrl: string;
+  /** 与后端 `[gateway].auth_token` 一致；存 localStorage，勿写入日志 */
+  gatewayToken: string;
   theme: 'dark' | 'light';
 }
 

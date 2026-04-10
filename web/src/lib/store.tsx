@@ -15,9 +15,10 @@ import type {
   WSIncoming,
   HealthDetail,
   AlertRecord,
+  ToolApprovalRequest,
 } from './types';
 import { WebSocketClient, type WSMessageHandler, type WSConnectionState } from './websocket';
-import { getTasks, getAgents } from './api';
+import { getTasks, getAgents, getPendingApprovals, respondApproval } from './api';
 
 // ============================================================
 // 状态类型定义
@@ -50,6 +51,8 @@ interface AppState {
   healthDetail: HealthDetail | null;
   /** 告警记录列表 */
   alerts: AlertRecord[];
+  /** 待人工批准的工具调用（轮询 HTTP） */
+  pendingApprovals: ToolApprovalRequest[];
 }
 
 // ============================================================
@@ -76,15 +79,17 @@ type Action =
   | { type: 'SET_ERROR'; payload: string | null }
   | { type: 'SET_HEALTH_DETAIL'; payload: HealthDetail | null }
   | { type: 'SET_ALERTS'; payload: AlertRecord[] }
-  | { type: 'ADD_ALERT'; payload: AlertRecord };
+  | { type: 'ADD_ALERT'; payload: AlertRecord }
+  | { type: 'SET_PENDING_APPROVALS'; payload: ToolApprovalRequest[] };
 
 // ============================================================
 // 初始状态
 // ============================================================
 
 const defaultSettings: AppSettings = {
-  apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:18789/api',
-  wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:18789/ws',
+  apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:19870/api',
+  wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:19870/ws',
+  gatewayToken: typeof process !== 'undefined' ? (process.env.NEXT_PUBLIC_GATEWAY_TOKEN || '') : '',
   theme: 'dark',
 };
 
@@ -102,6 +107,7 @@ const initialState: AppState = {
   error: null,
   healthDetail: null,
   alerts: [],
+  pendingApprovals: [],
 };
 
 // ============================================================
@@ -231,6 +237,9 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'ADD_ALERT':
       return { ...state, alerts: [action.payload, ...state.alerts].slice(0, 100) };
 
+    case 'SET_PENDING_APPROVALS':
+      return { ...state, pendingApprovals: action.payload };
+
     default:
       return state;
   }
@@ -249,6 +258,8 @@ interface AppContextValue {
   refreshTasks: () => Promise<void>;
   refreshAgents: () => Promise<void>;
   refreshHealth: () => Promise<void>;
+  refreshPendingApprovals: () => Promise<void>;
+  respondToolApproval: (approvalId: string, approved: boolean) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -269,7 +280,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const saved = localStorage.getItem('pa_settings');
     if (saved) {
       try {
-        const settings: AppSettings = JSON.parse(saved);
+        const parsed = JSON.parse(saved) as Partial<AppSettings>;
+        const settings: AppSettings = { ...defaultSettings, ...parsed };
         dispatch({ type: 'SET_SETTINGS', payload: settings });
         dispatch({ type: 'SET_THEME', payload: settings.theme });
       } catch {
@@ -350,6 +362,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // WebSocket 地址或 Gateway 令牌变更时按 localStorage 立即重连
+  const wsConnSettingsRef = useRef<{ u: string; t: string } | null>(null);
+  useEffect(() => {
+    const u = state.settings.wsUrl;
+    const t = state.settings.gatewayToken;
+    if (!wsConnSettingsRef.current) {
+      wsConnSettingsRef.current = { u, t };
+      return;
+    }
+    if (wsConnSettingsRef.current.u !== u || wsConnSettingsRef.current.t !== t) {
+      wsConnSettingsRef.current = { u, t };
+      wsClientRef.current?.restart();
+    }
+  }, [state.settings.wsUrl, state.settings.gatewayToken]);
 
   /** 处理 WebSocket 消息 */
   const handleWSMessage = useCallback((message: WSIncoming) => {
@@ -562,6 +589,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /** 刷新待人工批准的工具调用 */
+  const refreshPendingApprovals = useCallback(async () => {
+    try {
+      const { pending } = await getPendingApprovals();
+      dispatch({ type: 'SET_PENDING_APPROVALS', payload: pending });
+    } catch {
+      dispatch({ type: 'SET_PENDING_APPROVALS', payload: [] });
+    }
+  }, []);
+
+  /** 提交工具调用批准 / 拒绝 */
+  const respondToolApproval = useCallback(
+    async (approvalId: string, approved: boolean) => {
+      try {
+        await respondApproval(approvalId, approved);
+        await refreshPendingApprovals();
+      } catch (e) {
+        dispatch({ type: 'SET_ERROR', payload: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    [refreshPendingApprovals],
+  );
+
+  // WebSocket 已连接时轮询待批准列表（查询会阻塞 WS，故用独立 HTTP）
+  useEffect(() => {
+    if (state.wsState !== 'connected') {
+      dispatch({ type: 'SET_PENDING_APPROVALS', payload: [] });
+      return;
+    }
+    const t = setInterval(() => {
+      void refreshPendingApprovals();
+    }, 1500);
+    void refreshPendingApprovals();
+    return () => clearInterval(t);
+  }, [state.wsState, refreshPendingApprovals]);
+
   return (
     <AppContext.Provider
       value={{
@@ -573,6 +636,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         refreshTasks,
         refreshAgents,
         refreshHealth,
+        refreshPendingApprovals,
+        respondToolApproval,
       }}
     >
       {children}

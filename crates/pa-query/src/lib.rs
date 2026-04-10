@@ -19,13 +19,21 @@
 //! - Token 使用警告
 //! - MAGMA 记忆检索集成
 
+pub mod approval;
+pub mod audit;
 pub mod config;
 pub mod engine;
 pub mod error;
 pub mod permission;
+pub mod security;
 
 // 重新导出常用类型
+pub use approval::{
+    CliToolApproval, SharedApprovalBroker, ToolApprovalProvider, ToolApprovalRequest,
+};
+pub use audit::{AuditSink, TraceEmitter};
 pub use config::QueryConfig;
 pub use engine::{QueryEngine, QueryOutcome};
 pub use error::ErrorAction;
-pub use permission::PermissionDecision;
+pub use permission::{PermissionChecker, PermissionDecision};
+pub use security::SecurityPolicy;

@@ -55,20 +55,35 @@ export class WebSocketClient {
     return this._state;
   }
 
-  /** 获取 WebSocket URL */
+  /** 获取 WebSocket URL（含 `token` 查询参数，与 Gateway `auth_token` 一致） */
   private getUrl(): string {
+    let base = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:19870/ws';
+    let token = '';
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('pa_settings');
       if (saved) {
         try {
-          const settings = JSON.parse(saved);
-          if (settings.wsUrl) return settings.wsUrl;
+          const settings = JSON.parse(saved) as { wsUrl?: string; gatewayToken?: string };
+          if (settings.wsUrl) base = settings.wsUrl;
+          if (typeof settings.gatewayToken === 'string') token = settings.gatewayToken.trim();
         } catch {
           // 解析失败，使用默认值
         }
       }
     }
-    return process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:18789/ws';
+    return appendWsToken(base, token || (process.env.NEXT_PUBLIC_GATEWAY_TOKEN || '').trim());
+  }
+
+  /** 在地址或令牌变更后立即按当前 localStorage 重连 */
+  restart(): void {
+    this.clearReconnectTimer();
+    this.options.autoReconnect = true;
+    if (this.ws) {
+      const w = this.ws;
+      this.ws = null;
+      w.close();
+    }
+    this.connect();
   }
 
   /** 建立连接 */
@@ -213,5 +228,25 @@ export class WebSocketClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+}
+
+/** 为 WebSocket URL 附加 `token`（浏览器无法自定义 WS Header 时使用） */
+function appendWsToken(url: string, token: string): string {
+  if (!token) {
+    return stripTokenParam(url);
+  }
+  const u = stripTokenParam(url);
+  const sep = u.includes('?') ? '&' : '?';
+  return `${u}${sep}token=${encodeURIComponent(token)}`;
+}
+
+function stripTokenParam(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.delete('token');
+    return u.toString();
+  } catch {
+    return url.replace(/([?&])token=[^&]*&?/g, '$1').replace(/\?$/, '');
   }
 }

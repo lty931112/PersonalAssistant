@@ -12,6 +12,8 @@
 
 **操作系统支持**: Linux (推荐)、macOS、Windows (WSL2)
 
+**WSL2 / Ubuntu 24.04.x**: 可使用仓库内引导脚本安装构建依赖并完成 Release 编译：`scripts/deploy-wsl-ubuntu24.sh --install-deps`（详见脚本内说明）。
+
 ---
 
 ## 二、快速开始
@@ -119,10 +121,17 @@ fallback_model = ""                 # 过载时切换的备用模型（可选）
 ```toml
 [gateway]
 bind = "127.0.0.1"       # 监听地址
-port = 18789              # 监听端口
-auth_token = ""           # WebSocket 认证令牌（可选）
+port = 19870              # 监听端口
+auth_token = ""           # Gateway 令牌（可选）。非空时保护 /ws、/metrics、/api/*（含审计与批准）
 tailscale_enabled = false # Tailscale 集成（可选）
 ```
+
+**`auth_token` 行为**（与令牌一致即可，三选一）：
+
+- HTTP：`Authorization: Bearer <token>` 或 `X-PA-Token: <token>`
+- 浏览器 WebSocket：连接 URL 增加 `?token=<token>`（前端设置页会写入）
+- 未配置或为空：不校验（仅建议本机或内网）
+- 始终放行：`OPTIONS`（CORS 预检）、`GET /health`
 
 #### 记忆配置
 
@@ -240,7 +249,8 @@ config_path = "config/mcp.toml"
 2. 创建企业自建应用
 3. 在「凭证与基础信息」中获取 `App ID` 和 `App Secret`
 4. 在「事件与回调」中配置：
-   - 请求地址: `https://your-server:18789/feishu/webhook`
+   - 请求地址: `https://your-domain/feishu/webhook`（公网 HTTPS；Nginx 反代到本机 `http://127.0.0.1:19871/feishu/webhook`）
+   - 飞书 Webhook 进程默认监听 **19871**（环境变量 `FEISHU_PORT` 可覆盖），与 Gateway **19870** 分离
    - 验证 Token: 自定义一个字符串
 5. 订阅以下事件：
    - `im.message.receive_v1` (接收消息)
@@ -255,6 +265,8 @@ config_path = "config/mcp.toml"
 export FEISHU_APP_ID="cli_xxxxx"
 export FEISHU_APP_SECRET="xxxxx"
 export FEISHU_VERIFICATION_TOKEN="your_verification_token"
+# 可选：覆盖 Webhook 监听端口（默认 19871）
+# export FEISHU_PORT=19871
 ```
 
 #### 步骤 3: 启动时启用飞书
@@ -325,6 +337,7 @@ Environment=ANTHROPIC_API_KEY=sk-ant-xxxxx
 Environment=FEISHU_APP_ID=cli_xxxxx
 Environment=FEISHU_APP_SECRET=xxxxx
 Environment=FEISHU_VERIFICATION_TOKEN=xxxxx
+Environment=FEISHU_PORT=19871
 
 # 安全加固
 NoNewPrivileges=true
@@ -356,9 +369,9 @@ server {
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
 
-    # 飞书 Webhook
+    # 飞书 Webhook（进程默认监听 19871，与 Gateway 19870 分离）
     location /feishu/webhook {
-        proxy_pass http://127.0.0.1:18789;
+        proxy_pass http://127.0.0.1:19871;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -367,7 +380,7 @@ server {
 
     # WebSocket
     location /ws {
-        proxy_pass http://127.0.0.1:18789;
+        proxy_pass http://127.0.0.1:19870;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -377,14 +390,14 @@ server {
 
     # HTTP API
     location /api/ {
-        proxy_pass http://127.0.0.1:18789;
+        proxy_pass http://127.0.0.1:19870;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     # 健康检查
     location /health {
-        proxy_pass http://127.0.0.1:18789;
+        proxy_pass http://127.0.0.1:19870;
     }
 }
 ```
@@ -396,7 +409,7 @@ server {
 ```toml
 [gateway]
 bind = "127.0.0.1"
-port = 18789
+port = 19870
 auth_token = "${PA_AUTH_TOKEN}"    # 生产环境建议设置认证
 
 [llm]
@@ -459,34 +472,34 @@ cargo run -- version
 服务启动后，可通过以下 API 管理任务和 Agent：
 
 ```bash
-# 健康检查
-curl http://127.0.0.1:18789/health
+# 健康检查（无需令牌）
+curl http://127.0.0.1:19870/health
 
-# 列出所有任务
-curl http://127.0.0.1:18789/api/tasks
+# 列出所有任务（未启用认证 / 或已启用时在每条请求上加 -H "Authorization: Bearer TOKEN"）
+curl http://127.0.0.1:19870/api/tasks
 
 # 获取任务详情
-curl http://127.0.0.1:18789/api/tasks/{task_id}
+curl http://127.0.0.1:19870/api/tasks/{task_id}
 
 # 暂停任务
-curl -X POST http://127.0.0.1:18789/api/tasks/{task_id}/pause
+curl -X POST http://127.0.0.1:19870/api/tasks/{task_id}/pause
 
 # 恢复任务
-curl -X POST http://127.0.0.1:18789/api/tasks/{task_id}/resume
+curl -X POST http://127.0.0.1:19870/api/tasks/{task_id}/resume
 
 # 取消任务
-curl -X POST http://127.0.0.1:18789/api/tasks/{task_id}/cancel
+curl -X POST http://127.0.0.1:19870/api/tasks/{task_id}/cancel
 
 # 列出所有 Agent
-curl http://127.0.0.1:18789/api/agents
+curl http://127.0.0.1:19870/api/agents
 
 # 获取 Agent 状态
-curl http://127.0.0.1:18789/api/agents/{agent_id}/status
+curl http://127.0.0.1:19870/api/agents/{agent_id}/status
 ```
 
 ### 7.2 WebSocket 接口
 
-连接地址: `ws://127.0.0.1:18789/ws`
+连接地址: `ws://127.0.0.1:19870/ws`；若启用 `auth_token`，使用 `ws://127.0.0.1:19870/ws?token=YOUR_TOKEN`（浏览器无法自定义 WS 头时）。
 
 发送查询：
 ```json
@@ -538,7 +551,7 @@ RUST_LOG=pa_query=debug,pa_mcp=trace cargo run -- start
 ## 九、安全建议
 
 1. **API 密钥**: 使用环境变量，不要提交到 Git
-2. **Gateway 认证**: 生产环境设置 `auth_token`
+2. **Gateway 认证**: 生产环境设置 `auth_token`（`PA_AUTH_TOKEN`），Web 控制台在「设置 → 连接」填写同一令牌；勿将令牌写入日志或提交仓库
 3. **权限模式**: 生产环境使用 `default` 或 `accept-edits`，避免 `bypass-permissions`
 4. **费用限制**: 设置 `max_budget_usd` 防止意外高额费用
 5. **飞书白名单**: 使用 `allowed_users` 限制可交互用户

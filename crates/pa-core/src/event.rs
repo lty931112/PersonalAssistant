@@ -181,6 +181,31 @@ pub enum QueryEvent {
         /// 来源标识
         source: String,
     },
+    /// 一次查询 / 任务的追踪 ID 已生成（可观测性入口）
+    TraceStarted {
+        /// 追踪 ID（与审计日志、`Observability` 事件一致）
+        trace_id: String,
+    },
+    /// 追踪结束（结果摘要）
+    TraceEnded {
+        trace_id: String,
+        /// 人类可读结果：如 end_turn、cancelled、error:...
+        outcome: String,
+        /// 最后一轮轮次号（若适用）
+        last_turn: Option<u32>,
+    },
+    /// 结构化执行步骤（权限判定、工具前后、LLM 轮次等）
+    Observability {
+        trace_id: String,
+        /// 单调递增序号，便于还原整条链路顺序
+        seq: u64,
+        /// 阶段标识，如 `turn_start`、`llm_stop`、`permission`、`tool_done`
+        phase: String,
+        /// 所属 reask 轮次（若适用）
+        turn: Option<u32>,
+        /// 结构化详情（工具名、判定结果、截断后的结果预览等）
+        detail: serde_json::Value,
+    },
 }
 
 impl QueryEvent {

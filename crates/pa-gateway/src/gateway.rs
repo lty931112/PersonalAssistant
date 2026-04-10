@@ -7,6 +7,7 @@ use pa_core::{CoreError, AgentId};
 use pa_config::Settings;
 use pa_task::{TaskManager, TaskStore};
 use pa_agent::Agent;
+use pa_query::SharedApprovalBroker;
 use crate::server::GatewayServer;
 use crate::client::ClientRegistry;
 use crate::events::EventBus;
@@ -28,6 +29,8 @@ pub struct Gateway {
     alert_manager: Option<Arc<AlertManager>>,
     /// Watchdog 配置
     watchdog_config: Option<WatchdogConfig>,
+    /// 工具调用人工批准（与 Agent 内 QueryEngine 共用）
+    approval_broker: Option<Arc<SharedApprovalBroker>>,
 }
 
 impl Gateway {
@@ -54,6 +57,7 @@ impl Gateway {
             agents_map: Arc::new(RwLock::new(HashMap::new())),
             alert_manager: None,
             watchdog_config: None,
+            approval_broker: None,
         })
     }
 
@@ -79,7 +83,14 @@ impl Gateway {
             agents_map: Arc::new(RwLock::new(HashMap::new())),
             alert_manager: None,
             watchdog_config: None,
+            approval_broker: None,
         })
+    }
+
+    /// 注入共享批准 Broker（须与 QueryEngine 为同一实例）
+    pub fn with_approval_broker(mut self, broker: Arc<SharedApprovalBroker>) -> Self {
+        self.approval_broker = Some(broker);
+        self
     }
 
     /// 设置 Watchdog 配置
@@ -111,6 +122,7 @@ impl Gateway {
             self.settings.clone(),
             self.task_manager.clone(),
             self.agents_map.clone(),
+            self.approval_broker.clone(),
         );
 
         self.server = Some(server);

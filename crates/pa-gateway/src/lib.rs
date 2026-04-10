@@ -17,7 +17,9 @@ pub use gateway::Gateway;
 pub use server::{GatewayServer, AppState};
 pub use protocol::{Message as ProtocolMessage, MethodCall, MethodResponse};
 pub use client::ClientConnection;
-pub use auth::Authenticator;
+pub use auth::{
+    extract_gateway_credential, gateway_auth_enabled, verify_gateway_credential, Authenticator,
+};
 pub use events::EventBus;
 pub use watchdog::{Watchdog, WatchdogConfig};
 pub use metrics::MetricsCollector;

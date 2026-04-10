@@ -84,7 +84,7 @@ impl FeishuChannel {
             event_sender: Arc::new(RwLock::new(None)),
             event_receiver: Arc::new(RwLock::new(None)),
             server_handle: Arc::new(RwLock::new(None)),
-            port: 8080,
+            port: 19871,
         }
     }
 

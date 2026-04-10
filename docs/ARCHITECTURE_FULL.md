@@ -500,7 +500,7 @@ FeishuEventHandler.verify_challenge()
 ```toml
 [gateway]
 bind = "127.0.0.1"
-port = 18789
+port = 19870
 auth_token = "${PA_AUTH_TOKEN:-}"
 tailscale_enabled = false
 

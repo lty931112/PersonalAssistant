@@ -25,3 +25,4 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sysinfo = "0.32"
 reqwest = { workspace = true }
+url = { workspace = true }

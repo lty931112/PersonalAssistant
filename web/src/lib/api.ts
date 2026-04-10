@@ -2,7 +2,16 @@
 // PersonalAssistant 前端 - HTTP API 客户端
 // ============================================================
 
-import type { TaskInfo, TaskEvent, AgentStatusInfo, HealthDetail, AlertConfig, WatchdogConfig, MetricsData } from './types';
+import type {
+  TaskInfo,
+  TaskEvent,
+  AgentStatusInfo,
+  HealthDetail,
+  AlertConfig,
+  WatchdogConfig,
+  MetricsData,
+  ToolApprovalRequest,
+} from './types';
 
 /**
  * 获取 API 基础地址
@@ -20,7 +29,35 @@ function getApiBaseUrl(): string {
       }
     }
   }
-  return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:18789/api';
+  return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:19870/api';
+}
+
+/** 去掉 `/api` 后缀，用于 `/health`、`/metrics` 等根路径 */
+function getGatewayRootUrl(): string {
+  return getApiBaseUrl().replace(/\/api\/?$/, '');
+}
+
+function getGatewayToken(): string {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('pa_settings');
+    if (saved) {
+      try {
+        const s = JSON.parse(saved) as { gatewayToken?: string };
+        if (typeof s.gatewayToken === 'string' && s.gatewayToken.trim()) {
+          return s.gatewayToken.trim();
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return (process.env.NEXT_PUBLIC_GATEWAY_TOKEN || '').trim();
+}
+
+function authHeaders(): Record<string, string> {
+  const t = getGatewayToken();
+  if (!t) return {};
+  return { Authorization: `Bearer ${t}` };
 }
 
 /**
@@ -33,6 +70,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders(),
       ...options?.headers,
     },
   });
@@ -81,6 +119,26 @@ export async function cancelTask(taskId: string): Promise<void> {
 }
 
 // ============================================================
+// 工具人工批准（HITL）
+// ============================================================
+
+/** 待处理批准列表 */
+export async function getPendingApprovals(): Promise<{ pending: ToolApprovalRequest[] }> {
+  return request('/approvals/pending');
+}
+
+/** 提交批准或拒绝 */
+export async function respondApproval(
+  approvalId: string,
+  approved: boolean,
+): Promise<{ ok: boolean; approval_id: string }> {
+  return request(`/approvals/${encodeURIComponent(approvalId)}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ approved }),
+  });
+}
+
+// ============================================================
 // Agent 相关 API
 // ============================================================
 
@@ -98,9 +156,22 @@ export async function getAgentStatus(agentId: string): Promise<AgentStatusInfo> 
 // 健康检查
 // ============================================================
 
-/** 检查后端是否在线 */
+/** 检查后端是否在线（`GET /health`，不经 `/api` 前缀） */
 export async function healthCheck(): Promise<string> {
-  return request('/health');
+  const root = getGatewayRootUrl();
+  const res = await fetch(`${root}/health`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '未知错误');
+    throw new Error(`健康检查失败 (${res.status}): ${text}`);
+  }
+  const contentType = res.headers.get('content-type');
+  if (contentType?.includes('application/json')) {
+    const j = await res.json();
+    return typeof j === 'object' && j !== null && 'status' in j
+      ? JSON.stringify(j)
+      : String(j);
+  }
+  return res.text();
 }
 
 // ============================================================
@@ -109,7 +180,13 @@ export async function healthCheck(): Promise<string> {
 
 /** 获取深度健康检查详情 */
 export async function getHealthDetail(): Promise<HealthDetail> {
-  return request('/health');
+  const root = getGatewayRootUrl();
+  const res = await fetch(`${root}/health`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '未知错误');
+    throw new Error(`健康检查失败 (${res.status}): ${text}`);
+  }
+  return res.json();
 }
 
 // ============================================================
@@ -152,9 +229,9 @@ export async function updateWatchdogConfig(config: Partial<WatchdogConfig>): Pro
 
 /** 获取 Prometheus 格式的原始指标 */
 export async function getMetricsRaw(): Promise<string> {
-  const baseUrl = getApiBaseUrl().replace(/\/api$/, '');
+  const baseUrl = getGatewayRootUrl();
   const url = `${baseUrl}/metrics`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: { ...authHeaders() } });
   if (!res.ok) {
     throw new Error(`获取指标失败 (${res.status})`);
   }

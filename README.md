@@ -97,6 +97,13 @@ cd PersonalAssistant
 cargo build --release
 ```
 
+在 **WSL2 + Ubuntu 24.04.x** 下可用一键引导脚本安装系统依赖、Rust（若缺失）并执行 `cargo build --release`：
+
+```bash
+chmod +x scripts/deploy-wsl-ubuntu24.sh
+./scripts/deploy-wsl-ubuntu24.sh --install-deps
+```
+
 ### 配置
 
 创建 `config/default.toml`：
@@ -104,7 +111,7 @@ cargo build --release
 ```toml
 [gateway]
 bind = "127.0.0.1"
-port = 18789
+port = 19870
 
 [llm]
 provider = "anthropic"

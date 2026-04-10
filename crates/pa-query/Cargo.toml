@@ -6,6 +6,7 @@ description = "Reask query loop engine for PersonalAssistant"
 
 [dependencies]
 pa-core = { workspace = true }
+pa-config = { workspace = true }
 pa-llm = { workspace = true }
 pa-memory = { workspace = true }
 pa-tools = { workspace = true }
