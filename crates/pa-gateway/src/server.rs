@@ -669,7 +669,11 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
             };
 
             let Some(agent_arc) = agent_arc else {
-                MethodResponse::error(&call_id, format!("Agent {} 不存在", agent_id))
+                return serde_json::to_string(&MethodResponse::error(
+                    &call_id,
+                    format!("Agent {} 不存在", agent_id),
+                ))
+                .unwrap_or_else(|_| json!({"error": "序列化响应失败"}).to_string());
             };
 
             let (mut config, display_name) = {
