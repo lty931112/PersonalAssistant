@@ -68,15 +68,16 @@ cargo run -- start --verbose
 
 ### 3.1 配置文件层级
 
-系统按以下顺序查找配置文件，使用第一个找到的：
+`pa_config::ConfigLoader::load_or_default` 按以下顺序查找配置文件，使用第一个存在的文件：
 
 ```
-1. --config / -c 指定的路径
-2. config/default.toml
-3. config.toml
-4. .pa/config.toml
-5. 使用默认值 + 环境变量
+1. config/default.toml
+2. config.toml（当前工作目录）
+3. .pa/config.toml
+4. 若均不存在：使用 Settings::default()，并尝试从 ANTHROPIC_API_KEY / OPENAI_API_KEY 填充密钥
 ```
+
+说明：CLI 虽解析 `--config` / `-c` 并写入 `Config.config_path`，但当前根入口 `src/main.rs` 仍固定调用 `Settings::load_or_default()`，**不会**读取该路径。自定义路径需将文件放到上述标准位置之一，或扩展 `main` 中的加载逻辑。
 
 ### 3.2 环境变量
 

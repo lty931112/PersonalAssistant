@@ -1,284 +1,282 @@
 # PersonalAssistant
 
-> 一个融合 OpenClaw 网关架构、Claude Code Reask 查询循环和 MAGMA 多图谱记忆架构的 AI 智能体平台
+PersonalAssistant 是一个以 **Rust Workspace** 组织的 AI 智能体运行时：在 **Gateway（HTTP + WebSocket）** 上托管多 Agent，通过 **Reask 查询循环**（`pa-query`）驱动 LLM 与工具调用，并可选接入 **MAGMA 多图谱记忆**（`pa-memory`）、**MCP 工具**（`pa-mcp`）、**飞书通道**（`pa-channel-feishu`）与 **任务持久化**（`pa-task`）。设计上借鉴 OpenClaw 式控制平面、Claude Code 式 agentic loop，以及 MAGMA 论文中的记忆结构思想——具体行为以各 crate 源码为准。
 
-## 🌟 核心特性
+---
 
-### 🔁 Reask 查询循环引擎
+## 目录
 
-参考 Claude Code 的 agentic query loop 设计，实现核心的"请求-响应-工具调用-结果反馈-再次请求"迭代机制：
+- [核心能力](#核心能力)
+- [仓库结构](#仓库结构)
+- [环境要求](#环境要求)
+- [构建与运行](#构建与运行)
+- [配置说明](#配置说明)
+- [命令行（CLI）](#命令行cli)
+- [Gateway：HTTP / WebSocket](#gatewayhttp--websocket)
+- [Web 控制台（Next.js）](#web-控制台nextjs)
+- [安全、审计与告警](#安全审计与告警)
+- [内置工具](#内置工具)
+- [文档与延伸阅读](#文档与延伸阅读)
+- [开发](#开发)
+- [许可证与致谢](#许可证与致谢)
 
-- 多轮 `tool_use` → `tool_result` → reask 循环
-- 工具结果预算管理（防止上下文膨胀）
-- 并发工具执行支持
-- 错误分类重试（Rate Limit、Overloaded 等）
-- 自动压缩（上下文使用率 > 90%）
-- 权限检查流程
-- Token 使用警告
+---
 
-### 🧠 MAGMA 多图谱记忆架构
+## 核心能力
 
-实现 Multi-Graph based Agentic Memory Architecture：
+| 模块 | 说明 |
+|------|------|
+| **Reask 查询循环** | LLM 流式响应 → `tool_use` → 工具执行 → `tool_result` 写回 → 再次请求；支持并发工具、结果预算、权限与安全策略、可选人工批准。 |
+| **MAGMA 记忆** | 多图（语义 / 时间 / 因果 / 实体）+ 向量检索 + 查询管线；可开关、可与工具 `memory_store` / `memory_query` 配合。 |
+| **Gateway** | Axum 服务：`/ws` JSON-RPC 风格调用、`/api/*` REST、健康检查与 Prometheus 指标；可选 `auth_token` 保护。 |
+| **Agent 运行时** | 多 Agent 路由、沙箱执行路径、认证配置等（见 `pa-agent`）。 |
+| **MCP Host** | 从 `config/mcp.toml` 加载多 Server（stdio / http），工具桥接到内置注册表（需 `--enable-mcp`）。 |
+| **任务系统** | SQLite 持久化、暂停 / 恢复 / 取消；默认库路径可在配置或 CLI `--db` 中指定。 |
+| **飞书** | Webhook 通道；`--enable-feishu` 时从环境变量读取密钥并起独立端口（见下文）。 |
+| **「伏羲」人格** | 全局 / 按智能体 Markdown 人格、`[persona]` 配置与任务元数据命名（详见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)）。 |
 
-- **四个正交图谱**：语义图、时间图、因果图、实体图
-- **自适应层次检索**：四阶段检索管道
-- **双流记忆演化**：快速流（实时摄取）+ 慢速流（异步整合）
-- **意图感知路由**：根据查询意图动态调整检索策略
+---
 
-### 🚪 Gateway 控制平面
-
-参考 OpenClaw 的网关架构：
-
-- WebSocket 控制平面
-- 多 Agent 路由
-- 认证配置轮换
-- 沙箱执行环境
-
-### 🔌 插件化架构
-
-- LLM 提供商插件（OpenAI、Anthropic）
-- 消息通道插件
-- 工具插件
-- 记忆系统插件
-
-### 🔌 MCP Host
-
-完整的 MCP（Model Context Protocol）协议支持：
-
-- stdio 和 http 两种传输方式
-- 通过 TOML 配置文件管理 MCP Server
-- 动态启用/禁用 MCP Server
-- 与内置工具系统无缝集成
-
-### 📱 飞书通道
-
-通过飞书 Bot 进行交互：
-
-- Webhook 事件回调
-- 用户白名单控制
-- 环境变量注入敏感配置
-- 可选消息加密
-
-### 📊 任务管理
-
-任务监控与持久化：
-
-- SQLite 持久化存储
-- 任务中断恢复
-- 自动清理过期任务
-- 最大并发任务数控制
-
-### 「伏羲」人格与命名（Markdown 可配）
-
-- **全局 / 按智能体**人格：`config/persona/global.md` 与 `config/persona/agents/<agent_id>.md`；未定义时使用稳定的**山海经神兽**代号及内置**对话风格**。
-- **任务计划**：Gateway 发起的查询会为任务写入行星循环代号等 `metadata`（详见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 中的 **`[persona]`**）。
-
-## 📦 项目结构
-
+## 仓库结构
 
 ```
 PersonalAssistant/
-├── crates/
-│   ├── pa-core/           # 核心类型定义
-│   ├── pa-memory/         # MAGMA 多图谱记忆引擎
-│   ├── pa-query/          # Reask 查询循环引擎
-│   ├── pa-llm/            # LLM 客户端抽象层
-│   ├── pa-tools/          # 工具系统
-│   ├── pa-agent/          # Agent 运行时
-│   ├── pa-gateway/        # Gateway 控制平面
-│   ├── pa-mcp/            # MCP Host 实现
-│   ├── pa-task/           # 任务管理（监控、持久化）
-│   ├── pa-channel-feishu/ # 飞书通道适配
-│   ├── pa-plugin-sdk/     # 插件 SDK
-│   └── pa-config/         # 配置系统
-├── config/                # 默认 TOML 配置（含 persona/global.md、persona/agents/*.md）
-├── docs/                  # 补充文档（架构、crate、配置说明）
-└── src/                   # 根可执行包：main.rs（CLI 解析见 cli.rs）
+├── Cargo.toml                 # Workspace 与根二进制 personal-assistant
+├── build.rs                   # 构建期注入版本信息
+├── config/
+│   ├── default.toml           # 默认配置（建议从此复制并按环境修改）
+│   ├── mcp.toml.example       # MCP Server 配置示例
+│   └── persona/               # 人格 Markdown（global.md、agents/<id>.md）
+├── crates/                    # 库 crate：pa-core、pa-gateway、pa-query 等
+├── docs/                      # 架构、配置、部署、crate 说明
+├── scripts/                   # 例如 WSL/Ubuntu 一键依赖与编译脚本
+├── src/
+│   ├── main.rs                # 异步入口：日志、配置、start/query/version
+│   └── cli.rs                 # 命令行解析
+└── web/                       # Next.js 15 控制台（任务、Agent、审计、批准等）
 ```
 
-更细的模块依赖与配置项说明见 [docs/README.md](docs/README.md)。
+更细的 crate 职责见 [docs/CRATES.md](docs/CRATES.md)；分层与依赖方向见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
-### 实现状态说明
+---
 
-- 各子系统（Gateway、Agent、Query、Memory、Tools、MCP、Task、Feishu Channel）已在对应 crate 中实现并完成主流程接线。
-- 根入口 `src/main.rs` 已接入 `src/cli.rs`，支持 `start`、`query`、`version` 子命令。
+## 环境要求
 
-## 🚀 快速开始
+| 依赖 | 说明 |
+|------|------|
+| **Rust** | 建议 1.75+（`rustup`）。 |
+| **操作系统** | Linux（推荐）、macOS、Windows（推荐 WSL2）。 |
+| **Node.js** | 仅构建/运行 `web/` 时需要，建议 18+。 |
+| **Docker** | 仅在使用 Agent 沙箱等能力时需要。 |
+| **LLM API 密钥** | Anthropic 或 OpenAI（或兼容端点），见配置节。 |
 
-### 安装
+WSL2 + Ubuntu 可参考 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) 中的 `scripts/deploy-wsl-ubuntu24.sh`。
+
+---
+
+## 构建与运行
 
 ```bash
-# 克隆仓库
-git clone https://github.com/your-username/PersonalAssistant.git
+git clone https://github.com/lty931112/PersonalAssistant.git
 cd PersonalAssistant
 
-# 构建
+# 开发构建
+cargo build
+
+# 生产构建
 cargo build --release
-```
+# 可执行文件：target/release/personal-assistant（debug 则为 target/debug/...）
 
-在 **WSL2 + Ubuntu 24.04.x** 下可用一键引导脚本安装系统依赖、Rust（若缺失）并执行 `cargo build --release`：
-
-```bash
-chmod +x scripts/deploy-wsl-ubuntu24.sh
-./scripts/deploy-wsl-ubuntu24.sh --install-deps
-```
-
-### 配置
-
-创建 `config/default.toml`：
-
-```toml
-[gateway]
-bind = "127.0.0.1"
-port = 19870
-
-[llm]
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-api_key = "${ANTHROPIC_API_KEY}"
-
-[memory]
-enabled = true
-vector_search_k = 20
-keyword_threshold = 0.3
-top_k_final = 5
-max_traversal_hops = 3
-
-[agent]
-default_max_turns = 10
-tool_result_budget = 50000
-
-[mcp]
-enabled = false
-config_path = "config/mcp.toml"
-
-[feishu]
-enabled = false
-app_id = "${FEISHU_APP_ID}"
-app_secret = "${FEISHU_APP_SECRET}"
-verification_token = "${FEISHU_VERIFICATION_TOKEN}"
-webhook_path = "/feishu/webhook"
-allowed_users = []
-
-[task]
-db_path = ".pa/tasks.db"
-cleanup_days = 30
-max_concurrent_tasks = 10
-```
-
-### 运行
-
-可先编译与运行测试：
-
-```bash
-cargo build --release
 cargo test
 ```
 
-CLI 实际用法（与 `src/cli.rs` 一致）示例：
+运行前请至少配置 LLM（环境变量或 `config/default.toml`），见下一节。
+
+**最小试用（单次查询，不常驻 Gateway）：**
 
 ```bash
-# 设置 API 密钥（Linux / macOS）
-export ANTHROPIC_API_KEY=your-api-key
+export ANTHROPIC_API_KEY="sk-ant-..."   # Linux/macOS
+cargo run -- query "用一句话介绍你自己"
+```
 
-# 启动 Gateway
+**启动 Gateway：**
+
+```bash
 cargo run -- start
-
-# 单次查询
-cargo run -- query "你好，请介绍一下你自己"
 ```
 
-PowerShell 设置环境变量：`$env:ANTHROPIC_API_KEY = "your-api-key"`。
+默认监听地址与端口来自配置中的 `[gateway]`（仓库内默认为 `127.0.0.1:19870`）。
 
-## 🛠️ 内置工具
+---
 
+## 配置说明
 
-| 工具             | 描述                                                 |
-| -------------- | -------------------------------------------------- |
-| `bash`         | 执行 Shell 命令                                        |
-| `read_file`    | 读取文件内容                                             |
-| `write_file`   | 写入文件                                               |
-| `search`       | 搜索文件内容（grep）                                       |
-| `glob`         | 文件模式匹配                                             |
-| `memory_store` | 存储记忆到 MAGMA                                        |
-| `memory_query` | 从 MAGMA 检索记忆                                       |
-| `web_fetch`    | 获取网页内容                                             |
-| `mcp_*`        | MCP 工具（通过 MCP 协议动态加载，参见 `config/mcp.toml.example`） |
+### 配置文件查找顺序
 
+`pa_config::ConfigLoader::load_or_default` 按顺序使用**第一个已存在**的文件：
 
-## 📖 架构详解
+1. `config/default.toml`
+2. `config.toml`（当前工作目录）
+3. `.pa/config.toml`
 
-### Reask 循环流程
+若均不存在，则使用 `Settings::default()`，并尝试用环境变量 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 填充密钥（逻辑见 `crates/pa-config/src/loader.rs`）。
 
-```
-用户输入
-    │
-    ▼
-[构建 API 请求: 系统提示 + 历史消息 + 工具定义]
-    │
-    ▼
-[流式调用 LLM]
-    │
-    ▼
-[处理响应内容块]
-    │
-    ├─ text → 渲染文本消息
-    ├─ thinking → 渲染思考过程
-    ├─ tool_use → 执行工具 → 获取结果 → [REASK]
-    │                                           │
-    │                                           ▼
-    │                              [重新调用 API，附带工具结果]
-    │                                           │
-    ├─ stop_reason = end_turn → 循环结束 ←──────┘
-    └─ stop_reason = max_tokens → 处理截断
-```
+仓库已提供一份较完整的示例：[config/default.toml](config/default.toml)，涵盖 `[gateway]`、`[llm]`、`[memory]`、`[agent]`、`[tools]`、`[mcp]`、`[feishu]`、`[task]`、`[persona]`、`[security]`、`[observability]`、`[alert]` 等。
 
-### MAGMA 四图谱架构
+### 环境变量占位符
 
-```
-                    ┌─────────────────┐
-                    │   Memory Node   │
-                    │  (事件/观察)     │
-                    └────────┬────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-│   语义图       │   │   时间图       │   │   因果图       │
-│ (概念关联)     │   │ (时间顺序)     │   │ (因果关系)     │
-└───────────────┘   └───────────────┘   └───────────────┘
-        │                    │                    │
-        └────────────────────┼────────────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │    实体图        │
-                    │  (实体关系)      │
-                    └─────────────────┘
+TOML 字符串支持 `${VAR}` 与 `${VAR:-默认值}`（见 `crates/pa-config/src/env.rs`）。
+
+### 与 CLI `--config` / `-c` 的关系
+
+`src/cli.rs` 会解析 `-c` / `--config` 并保存到 `Config.config_path`，但**当前** `src/main.rs` 仍调用 `Settings::load_or_default()`，不会读取该路径。若需使用自定义路径，请将文件放在上述三个标准路径之一，或自行扩展 `main` 中的加载逻辑。
+
+### MCP 配置文件
+
+启用 `--enable-mcp` 时，程序会尝试加载**固定路径** `config/mcp.toml`（与 `[mcp].config_path` 配置项无关；后者可用于其他模块约定）。可复制 `config/mcp.toml.example` 为 `config/mcp.toml` 并按需修改。
+
+### 飞书（`--enable-feishu`）
+
+`main` 中飞书通道会从环境变量读取（若缺失则报错退出该分支）：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_VERIFICATION_TOKEN`；可选 `FEISHU_PORT`（默认 `19871`）。
+
+---
+
+## 命令行（CLI）
+
+入口：`target/.../personal-assistant` 或 `cargo run -- <args>`。
+
+| 子命令 / 行为 | 说明 |
+|---------------|------|
+| `start` | 启动 Gateway：任务库、记忆、LLM、工具、`QueryEngine`、`Agent`、HTTP/WS 服务等。 |
+| `query <prompt>` | 单次查询；终端模式下部分工具需人工确认。 |
+| `version` / `-v` / `--version` | 打印版本与构建信息。 |
+| （无子命令） | 默认等价于 `version`（见 `cli.rs`）。 |
+
+| 选项 | 说明 |
+|------|------|
+| `-c` / `--config` | 已解析；**当前未接入** `Settings` 加载，见上文。 |
+| `--verbose` | 更详细的日志与行号输出。 |
+| `--db <path>` | SQLite 任务库路径（默认 `.pa/tasks.db`）。 |
+| `--no-memory` | 禁用记忆子系统（使用空记忆配置）。 |
+| `--permission-mode <mode>` | 覆盖权限模式（如 `default`、`bypass_permissions` 等，见 `main.rs` 中解析）。 |
+| `--enable-mcp` | 从 `config/mcp.toml` 合并 MCP 工具。 |
+| `--enable-feishu` | 尝试启动飞书 Webhook 服务（环境变量见上）。 |
+| `--daemon` | 守护进程模式（Unix 侧实现，见 `src/daemon.rs`）。 |
+
+示例：
+
+```bash
+cargo run -- start --verbose --enable-mcp
+cargo run -- query "列出当前目录" --no-memory --permission-mode bypass_permissions
 ```
 
-## 🔧 开发
+---
 
-### 运行测试
+## Gateway：HTTP / WebSocket
+
+服务由 `pa-gateway` 提供，路由定义见 `crates/pa-gateway/src/server.rs`。
+
+### 认证
+
+当 `[gateway].auth_token` **非空**时，除 `OPTIONS` 与 `GET /health` 外，请求需携带凭证之一：
+
+- `Authorization: Bearer <token>`
+- `X-PA-Token: <token>`
+- WebSocket 可使用查询参数 `token=<token>`
+
+### HTTP 端点（节选）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查（不受 token 保护） |
+| GET | `/metrics` | Prometheus 指标 |
+| GET | `/api/tasks` | 任务列表 |
+| GET | `/api/tasks/:id` | 任务详情（含事件） |
+| POST | `/api/tasks/:id/pause` | 暂停任务 |
+| POST | `/api/tasks/:id/resume` | 恢复任务 |
+| POST | `/api/tasks/:id/cancel` | 取消任务 |
+| GET | `/api/agents` | Agent 列表 |
+| GET | `/api/agents/:id/status` | Agent 状态 |
+| GET | `/api/audit/trace/:trace_id` | 按 trace 拉取审计片段 |
+| GET | `/api/approvals/pending` | 待处理工具批准 |
+| POST | `/api/approvals/:approval_id/respond` | 提交批准结果 |
+
+### WebSocket
+
+- URL：`ws://<bind>:<port>/ws`
+- 载荷为 JSON-RPC 风格的 `MethodCall` / `MethodResponse`（详见 `crates/pa-gateway/src/protocol.rs` 与 [docs/ARCHITECTURE_FULL.md](docs/ARCHITECTURE_FULL.md)）。
+
+---
+
+## Web 控制台（Next.js）
+
+目录：`web/`。用于连接同一 Gateway 的 REST API，查看任务、Agent、指标、审计与批准队列等。
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+默认 API 基址为 `http://localhost:19870/api`，可通过环境变量 `NEXT_PUBLIC_API_BASE_URL` 或页面内设置（localStorage `pa_settings`）修改。若 Gateway 启用了 `auth_token`，可设置 `NEXT_PUBLIC_GATEWAY_TOKEN` 或在 UI 中填写 token（Bearer）。
+
+生产构建：`npm run build && npm run start`。
+
+---
+
+## 安全、审计与告警
+
+- **`[security]`**：工作区路径限制（`enforce_workspace` / `workspace_roots`）、`web_fetch` URL 前缀白名单与 `strict_web_fetch`（默认倾向严格、需确认）。详见 [config/default.toml](config/default.toml) 与 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
+- **`[observability]`**：可将执行过程以 JSON Lines 写入审计文件（默认 `.pa/audit/execution.jsonl`），便于按 `trace_id` 回放。
+- **`[alert]`**：支持 Webhook 或飞书渠道告警（冷却时间可配）。
+
+Gateway 侧对审计与批准类 API 与业务 API 使用同一套鉴权中间件（在 token 启用时）。
+
+---
+
+## 内置工具
+
+由 `pa-tools` 注册（实现入口 `crates/pa-tools/src/builtin.rs`）。名称与权限语义以源码为准。
+
+| 工具名 | 作用 |
+|--------|------|
+| `bash` | 执行 Shell 命令 |
+| `read_file` / `write_file` | 读/写文件 |
+| `search` | 内容搜索（类 grep） |
+| `glob` | 路径 glob |
+| `memory_store` / `memory_query` | 写入 / 查询记忆 |
+| `web_fetch` | 抓取 URL 内容 |
+| `mcp__*` | 启用 MCP 后由桥接注册，命名依赖 Server 与工具 id |
+
+---
+
+## 文档与延伸阅读
+
+| 文档 | 内容 |
+|------|------|
+| [docs/README.md](docs/README.md) | 文档索引 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层、依赖方向、集成状态 |
+| [docs/ARCHITECTURE_FULL.md](docs/ARCHITECTURE_FULL.md) | 长文架构、数据流、API 与配置参考 |
+| [docs/CRATES.md](docs/CRATES.md) | Crate 职责 |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | 配置字段与加载规则 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署与环境 |
+
+---
+
+## 开发
 
 ```bash
 cargo test
-```
-
-### 代码检查
-
-```bash
 cargo clippy
 cargo fmt --check
 ```
 
-## 📄 许可证
+---
 
-MIT License
+## 许可证与致谢
 
-## 🙏 致谢
+本项目采用 **MIT License**。
 
-- [OpenClaw](https://github.com/openclaw/openclaw) - Gateway 架构参考
-- [Claude Code](https://github.com/Kuberwastaken/claude-code) - Reask 架构参考
-- [MAGMA](https://arxiv.org/abs/2601.03236) - 多图谱记忆架构论文
-
+- [OpenClaw](https://github.com/openclaw/openclaw) — Gateway 思路参考  
+- [Claude Code](https://github.com/Kuberwastaken/claude-code) — Reask / agentic loop 参考  
+- [MAGMA](https://arxiv.org/abs/2601.03236) — 多图谱记忆架构论文  

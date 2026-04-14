@@ -17,6 +17,8 @@
 
 显式加载请使用 `Settings::load(path)` 或 `ConfigLoader::load`。
 
+根二进制当前调用 `load_or_default()`；CLI 的 `-c` / `--config` 已解析但尚未传入加载器，详见根目录 [README.md](../README.md)「配置说明」。
+
 ## 环境变量占位符
 
 在 TOML 字符串中支持（`crates/pa-config/src/env.rs`）：

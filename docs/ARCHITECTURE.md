@@ -72,7 +72,7 @@ flowchart TB
 
 ## 与 README 中愿景的对应关系
 
-根 README 中的 OpenClaw 式 Gateway、Claude Code 式 Reask、MAGMA 多图谱记忆，在代码中分别主要落在 `pa-gateway`、`pa-query`、`pa-memory`。具体行为以各 crate 源码为准；若根二进制尚未接入上述模块，属于集成进度问题，而非架构分层错误。
+根 README 中的 OpenClaw 式 Gateway、Claude Code 式 Reask、MAGMA 多图谱记忆，在代码中分别主要落在 `pa-gateway`、`pa-query`、`pa-memory`。具体行为以各 crate 源码为准；根二进制已串联上述模块的主路径，个别 CLI 选项（如自定义配置文件路径）仍可能与加载器未完全对齐，属于实现细节而非分层错误。
 
 ## 当前集成状态（截至代码现状）
 
