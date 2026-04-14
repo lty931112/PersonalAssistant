@@ -99,3 +99,15 @@ echo "  若连接本机 Gateway，可设置:"
 echo "    export NEXT_PUBLIC_API_BASE_URL='http://127.0.0.1:19870/api'"
 echo "    export NEXT_PUBLIC_WS_URL='ws://127.0.0.1:19870/ws'"
 echo ""
+
+# 交互式生成 config/default.toml 与 config/mcp.toml；脚本内可选择启动服务与开机自启
+if [[ -n "${PA_SKIP_INTERACTIVE_SETUP:-}" ]]; then
+  echo "已设置 PA_SKIP_INTERACTIVE_SETUP，跳过交互配置。"
+elif [[ ! -t 0 ]]; then
+  echo "未检测到交互终端（stdin 非 TTY），跳过交互配置。"
+  echo "如需配置请在本机执行: bash $ROOT/scripts/interactive-setup-config.sh"
+else
+  echo "==> 启动配置向导…"
+  bash "$ROOT/scripts/interactive-setup-config.sh"
+fi
+echo ""
