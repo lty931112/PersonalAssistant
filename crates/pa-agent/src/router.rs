@@ -1,7 +1,6 @@
 //! Agent 路由器
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use regex::Regex;
 use pa_core::AgentId;
 use serde::{Serialize, Deserialize};
@@ -19,9 +18,6 @@ pub struct RoutingRule {
     pub weight: f64,
     /// 是否为正则表达式模式
     pub is_regex: bool,
-    /// 编译后的正则表达式（仅在 is_regex 为 true 时有效）
-    #[cfg(feature = "regex")]
-    compiled_regex: Option<Arc<Regex>>,
 }
 
 impl RoutingRule {

@@ -1,7 +1,6 @@
 //! 事件总线
 
-use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::broadcast;
 use pa_core::GatewayEvent;
 
 /// 事件总线

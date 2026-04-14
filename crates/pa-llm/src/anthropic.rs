@@ -689,7 +689,7 @@ impl LlmClientTrait for AnthropicClient {
 }
 
 async fn forward_anthropic_sse_stream(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     tx: mpsc::Sender<LlmStreamEvent>,
 ) {
  let mut stream = response.bytes_stream();

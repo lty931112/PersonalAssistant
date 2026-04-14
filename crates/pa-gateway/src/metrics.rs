@@ -10,9 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use sysinfo::{System, Pid};
-use tokio::sync::RwLock;
-use tracing::debug;
-
 /// 指标收集器
 #[derive(Clone)]
 pub struct MetricsCollector {
@@ -145,13 +142,12 @@ impl MetricsCollector {
             push("# TYPE pa_process_cpu_usage gauge");
             push(&format!("pa_process_cpu_usage {:.2}", process.cpu_usage()));
 
-            push("# HELP pa_process_threads 进程线程数");
+            push("# HELP pa_process_threads 进程任务/线程数（Linux 上为 tasks；其他平台可能为 0）");
             push("# TYPE pa_process_threads gauge");
-            push(&format!("pa_process_threads {}", process.threads().len()));
+            let thread_count = process.tasks().map(|t| t.len() as u64).unwrap_or(0);
+            push(&format!("pa_process_threads {}", thread_count));
 
-            push("# HELP pa_process_open_fds 进程打开的文件描述符数");
-            push("# TYPE pa_process_open_fds gauge");
-            push(&format!("pa_process_open_fds {}", process.open_files().len()));
+            // sysinfo 0.32 的 Process 不提供跨平台的 open_files 计数，省略该指标
         }
 
         output

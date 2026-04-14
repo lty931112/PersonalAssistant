@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use pa_config::AlertSettings;
+use pa_config::settings::AlertSettings;
 
 /// 告警级别
 #[derive(Debug, Clone, serde::Serialize)]
@@ -211,16 +211,14 @@ impl AlertManager {
 
         // 如果有独立的飞书凭证，直接使用；否则尝试使用已有的飞书通道
         // 这里使用独立的 HTTP 请求方式
-        let (app_id, app_secret) = match (&feishu_config.app_id, &feishu_config.app_secret) {
-            (Some(id), Some(secret)) => (id.clone(), secret.clone()),
-            _ => {
-                // 尝试从环境变量获取
-                (
+        let (app_id, app_secret): (String, String) =
+            match (&feishu_config.app_id, &feishu_config.app_secret) {
+                (Some(id), Some(secret)) => (id.clone(), secret.clone()),
+                _ => (
                     std::env::var("FEISHU_APP_ID").unwrap_or_default(),
                     std::env::var("FEISHU_APP_SECRET").unwrap_or_default(),
-                )
-            }
-        };
+                ),
+            };
 
         if app_id.is_empty() || app_secret.is_empty() {
             warn!("飞书告警凭证未配置，跳过告警: [{}] {}", alert_type, title);

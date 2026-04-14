@@ -1,8 +1,5 @@
 //! 认证配置管理
 
-use std::collections::HashMap;
-use pa_core::CoreError;
-
 /// 认证配置类型
 #[derive(Debug, Clone)]
 pub enum AuthType {

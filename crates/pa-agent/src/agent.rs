@@ -4,8 +4,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use pa_core::*;
 use pa_query::QueryEngine;
-use pa_memory::MagmaMemoryEngine;
-use pa_tools::ToolRegistry;
 use pa_task::{TaskManager, CancellationToken, TaskSnapshot, TaskPriority};
 use crate::auth_profile::AuthProfileManager;
 
@@ -73,7 +71,7 @@ pub struct Agent {
     config: AgentConfig,
     query_engine: QueryEngine,
     state: Arc<RwLock<AgentState>>,
-    auth_manager: Option<AuthProfileManager>,
+    _auth_manager: Option<AuthProfileManager>,
     /// 任务管理器（用于任务生命周期管理）
     task_manager: Arc<TaskManager>,
     /// 当前任务的取消令牌
@@ -97,7 +95,7 @@ impl Agent {
             config,
             query_engine,
             state: Arc::new(RwLock::new(AgentState::Idle)),
-            auth_manager: None,
+            _auth_manager: None,
             task_manager,
             cancel_token: None,
             completed_tasks: Arc::new(std::sync::atomic::AtomicU64::new(0)),

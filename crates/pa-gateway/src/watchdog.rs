@@ -83,7 +83,7 @@ impl Watchdog {
     /// 启动 Watchdog 后台任务
     ///
     /// 返回一个 JoinHandle，可用于等待或取消 Watchdog。
-    pub fn spawn(mut self) -> tokio::task::JoinHandle<()> {
+    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         if !self.config.enabled {
             info!("Watchdog 已禁用，跳过启动");
             return tokio::spawn(async {});

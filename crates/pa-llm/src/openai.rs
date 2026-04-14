@@ -764,7 +764,7 @@ impl LlmClientTrait for OpenAiClient {
 }
 
 async fn forward_openai_sse_stream(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     tx: mpsc::Sender<LlmStreamEvent>,
 ) {
             let mut stream = response.bytes_stream();

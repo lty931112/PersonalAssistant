@@ -1,7 +1,6 @@
 //! WebSocket 服务器与 HTTP REST API
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -342,7 +341,7 @@ async fn list_agents_handler(
 ) -> impl IntoResponse {
     let agents = state.agents_map.read().await;
     let mut agent_list = Vec::new();
-    for (id, agent) in agents.iter() {
+    for (_id, agent) in agents.iter() {
         let status = agent.read().await.get_status().await;
         agent_list.push(status);
     }
@@ -663,7 +662,10 @@ async fn respond_approval_handler(
     Ok(Json(json!({ "ok": true, "approval_id": approval_id })))
 }
 
-fn read_audit_steps_for_trace(path: &Path, trace_id: &str) -> Result<Vec<serde_json::Value>, String> {
+fn read_audit_steps_for_trace(
+    path: &std::path::Path,
+    trace_id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
