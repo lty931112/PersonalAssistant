@@ -21,7 +21,7 @@ struct MythicEntry {
 const MYTHICS: &[MythicEntry] = &[
     MythicEntry {
         name: "白泽",
-        voice: "通晓万物、言简意\u{8d4f}：先点要害再分层展开，好作类比与归纳，语气从容如博闻师长。",
+        voice: "通晓万物、言简意赅：先点要害再分层展开，好作类比与归纳，语气从容如博闻师长。",
     },
     MythicEntry {
         name: "穷奇",

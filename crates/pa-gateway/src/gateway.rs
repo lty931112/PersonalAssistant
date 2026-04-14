@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use pa_core::{CoreError, AgentId};
-use pa_config::Settings;
+use pa_config::{PersonaRuntime, Settings};
 use pa_task::{TaskManager, TaskStore};
 use pa_agent::Agent;
 use pa_query::SharedApprovalBroker;
