@@ -535,11 +535,13 @@ config_path = "config/mcp.toml"
 
 [feishu]
 enabled = false
-app_id = "${FEISHU_APP_ID}"
-app_secret = "${FEISHU_APP_SECRET}"
-verification_token = "${FEISHU_VERIFICATION_TOKEN}"
+app_id = "cli_xxxxx"
+app_secret = "xxxxx"
+verification_token = "your_verification_token"
 webhook_path = "/feishu/webhook"
+port = 19871
 allowed_users = []
+# encrypt_key = "xxx"           # 可选
 
 [task]
 db_path = ".pa/tasks.db"
@@ -603,6 +605,11 @@ cargo run -- version
 | `--permission-mode <mode>` | 权限模式 | `default` |
 | `--enable-mcp` | 启用 MCP 工具 | 禁用 |
 | `--enable-feishu` | 启用飞书通道 | 禁用 |
+
+飞书通道配置优先级：
+
+- `app_id` / `app_secret` / `verification_token`：优先读取配置文件 `[feishu]`，为空时回退环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN`
+- 端口：优先读取 `[feishu].port`（默认 `19871`），环境变量 `FEISHU_PORT` 可覆盖
 
 ---
 
