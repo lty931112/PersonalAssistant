@@ -76,42 +76,6 @@ allowed_users = []
 db_path = ".pa/tasks.db"
 cleanup_days = 30
 max_concurrent_tasks = 10
-
-# 「伏羲」人格：全局/按智能体 Markdown；智能体与流程块用山海经池，任务计划用行星名循环
-[persona]
-system_name = "伏羲"
-use_markdown_persona = true
-global_markdown_path = "config/persona/global.md"
-agents_markdown_dir = "config/persona/agents"
-
-# 安全：收窄 Agent 默认可达范围
-[security]
-# 为 true 时，read_file / search / glob / write_file 的路径必须落在 workspace_roots（或当前工作目录）下
-enforce_workspace = false
-# 工作区根目录列表；enforce_workspace=true 且留空时，使用服务启动时的当前工作目录
-workspace_roots = []
-# web_fetch 允许的 URL 前缀；匹配则自动允许（仍记审计）。strict_web_fetch=true 时，不在列表中的 URL 将触发「需确认」
-web_fetch_allow_url_prefixes = []
-# 严格外联：未命中白名单的 web_fetch 一律 Ask（推荐生产开启）
-strict_web_fetch = true
-
-# 可观测性：全链路审计（JSON Lines，便于按 trace_id 回放）
-[observability]
-audit_log_enabled = true
-audit_log_path = ".pa/audit/execution.jsonl"
-
-# 告警配置
-[alert]
-enabled = true
-# 告警渠道: "webhook"（默认）或 "feishu"
-channel = "webhook"
-# Webhook URL（默认告警渠道）
-webhook_url = "${ALERT_WEBHOOK_URL:-}"
-# 告警冷却时间（秒）
-cooldown_secs = 300
-
-# 飞书告警配置（可选，当 channel = "feishu" 时生效）
-# [alert.feishu]
-# chat_id = ""
-# app_id = ""
-# app_secret = ""
+# 非启动关键配置（persona/security/observability/alert）已拆分至：
+#   config/runtime.toml
+# 启动时会自动加载并覆盖同名字段；如需自定义路径可设置 PA_RUNTIME_CONFIG_PATH。

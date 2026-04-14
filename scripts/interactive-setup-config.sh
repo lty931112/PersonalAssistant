@@ -16,6 +16,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_DIR="${REPO_ROOT}/config"
 DEFAULT_OUT="${CONFIG_DIR}/default.toml"
 MCP_OUT="${CONFIG_DIR}/mcp.toml"
+RUNTIME_OUT="${CONFIG_DIR}/runtime.toml"
 
 # -----------------------------------------------------------------------------
 # 说明文档（运行前会展示）
@@ -82,6 +83,7 @@ B. default.toml 中 [feishu] 字段含义
    verification_token   — 飞书后台「事件订阅」校验 Token
    encrypt_key          — 可选，消息加密密钥
    webhook_path         — 本服务监听的 HTTP 路径，默认 /feishu/webhook
+   port                 — 飞书 Webhook 监听端口，默认 19871
    allowed_users        — 允许使用的飞书用户 ID 列表；留空表示不限制
 
 C. 环境变量（推荐生产）
@@ -241,6 +243,11 @@ main() {
     cp "${MCP_OUT}" "${backup}"
     echo "已备份现有 mcp.toml -> ${backup}"
   fi
+  if [[ -f "${RUNTIME_OUT}" ]]; then
+    backup="${RUNTIME_OUT}.bak.$(date +%Y%m%d%H%M%S 2>/dev/null || echo manual)"
+    cp "${RUNTIME_OUT}" "${backup}"
+    echo "已备份现有 runtime.toml -> ${backup}"
+  fi
 
   echo ""
   echo "======== Gateway [gateway] ========"
@@ -318,6 +325,7 @@ main() {
   FS_VER_TOKEN="$(prompt "verification_token" '${FEISHU_VERIFICATION_TOKEN}')"
   FS_ENC="$(prompt "encrypt_key（无则留空）" "")"
   FS_PATH="$(prompt "webhook_path" "/feishu/webhook")"
+  FS_PORT="$(prompt "feishu 监听端口 port" "19871")"
   FS_USERS="$(prompt "allowed_users（逗号分隔 open_id，留空=不限制）" "")"
 
   # allowed_users TOML 数组
@@ -403,12 +411,20 @@ app_secret = "${FS_APP_SECRET}"
 verification_token = "${FS_VER_TOKEN}"
 ${FS_ENC_LINE}
 webhook_path = "${FS_PATH}"
+port = ${FS_PORT}
 allowed_users = ${ALLOWED_TOML}
 
 [task]
 db_path = ".pa/tasks.db"
 cleanup_days = 30
 max_concurrent_tasks = 10
+EOF
+
+  cat > "${RUNTIME_OUT}" <<EOF
+# 由 scripts/interactive-setup-config.sh 生成
+# 说明：
+# - default.toml 仅保留服务启动必需配置；
+# - 本文件承载不影响服务启动的扩展配置（安全、可观测性、告警、人格）。
 
 [security]
 enforce_workspace = false
@@ -425,6 +441,12 @@ enabled = true
 channel = "webhook"
 webhook_url = "\${ALERT_WEBHOOK_URL:-}"
 cooldown_secs = 300
+
+[persona]
+system_name = "伏羲"
+use_markdown_persona = true
+global_markdown_path = "config/persona/global.md"
+agents_markdown_dir = "config/persona/agents"
 EOF
 
   # mcp.toml — 字段名与 pa-mcp 中 McpServerConfig 一致：transport_type
@@ -451,6 +473,7 @@ EOF
   echo "完成。"
   echo "  - ${DEFAULT_OUT}"
   echo "  - ${MCP_OUT}"
+  echo "  - ${RUNTIME_OUT}"
   echo ""
   echo "下一步建议："
   echo "  1) 检查 [llm] 与火山/飞书文档是否一致；密钥尽量用环境变量。"

@@ -464,9 +464,21 @@ async fn start_server(
     gateway.register_agent_instance(agent).await;
     info!("Agent 已注册到 Gateway");
 
-    // 11. 可选：启动飞书通道
-    if cli.enable_feishu {
-        info!("飞书通道已启用，正在初始化...");
+    // 11. 启动飞书通道（配置驱动 + CLI 强制开关）
+    let feishu_enabled_by_config = settings
+        .feishu
+        .as_ref()
+        .map(|f| f.enabled)
+        .unwrap_or(false);
+    let should_enable_feishu = cli.enable_feishu || feishu_enabled_by_config;
+    if should_enable_feishu {
+        if cli.enable_feishu && feishu_enabled_by_config {
+            info!("飞书通道已启用（来源: CLI --enable-feishu + 配置 [feishu].enabled=true），正在初始化...");
+        } else if cli.enable_feishu {
+            info!("飞书通道已启用（来源: CLI --enable-feishu），正在初始化...");
+        } else {
+            info!("飞书通道已启用（来源: 配置 [feishu].enabled=true），正在初始化...");
+        }
         match init_feishu_channel(&settings).await {
             Ok(()) => {
                 info!("飞书通道已启动");
@@ -475,6 +487,8 @@ async fn start_server(
                 tracing::warn!("飞书通道初始化失败: {}", e);
             }
         }
+    } else {
+        info!("飞书通道未启用（可通过配置 [feishu].enabled=true 或 CLI --enable-feishu 启用）");
     }
 
     // 12 & 13. 启动 Gateway 服务器 + 信号处理优雅关闭

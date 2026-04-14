@@ -12,6 +12,7 @@
 #   PA_WEB_PORT                例: 3333（前端 dev server 端口）
 #   PA_WEB_PORT_MAX_PROBE      例: 20（最多向后探测 20 个端口）
 #   PA_WEB_BIND_HOST           例: 0.0.0.0（前端服务监听地址）
+#   PA_ENABLE_FEISHU           auto|true|false（默认 auto：读取配置 [feishu].enabled）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,14 +25,91 @@ RUN_DIR="$REPO_ROOT/.pa/run"
 WEB_URL_FILE="$LOG_DIR/web-dev.url"
 GW_PID_FILE="$RUN_DIR/gateway.pid"
 WEB_PID_FILE="$RUN_DIR/web.pid"
+CONFIG_FILE="${PA_CONFIG_PATH:-$REPO_ROOT/config/default.toml}"
 
 export NEXT_PUBLIC_API_BASE_URL="${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:19870/api}"
 export NEXT_PUBLIC_WS_URL="${NEXT_PUBLIC_WS_URL:-ws://127.0.0.1:19870/ws}"
 WEB_PORT="${PA_WEB_PORT:-3333}"
 WEB_PORT_MAX_PROBE="${PA_WEB_PORT_MAX_PROBE:-20}"
 WEB_BIND_HOST="${PA_WEB_BIND_HOST:-0.0.0.0}"
+PA_ENABLE_FEISHU="${PA_ENABLE_FEISHU:-auto}"
+
+FEISHU_ENABLED="false"
+FEISHU_SOURCE="config"
+
+to_lower() {
+  echo "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+is_truthy() {
+  local v
+  v="$(to_lower "$1")"
+  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "y" || "$v" == "on" ]]
+}
+
+is_falsy() {
+  local v
+  v="$(to_lower "$1")"
+  [[ "$v" == "0" || "$v" == "false" || "$v" == "no" || "$v" == "n" || "$v" == "off" ]]
+}
+
+read_feishu_enabled_from_config() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "false"
+    return 0
+  fi
+  awk '
+    BEGIN { in_feishu=0; result="" }
+    /^[[:space:]]*\[feishu\][[:space:]]*$/ { in_feishu=1; next }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ { if (in_feishu) exit; next }
+    in_feishu {
+      line=$0
+      sub(/#.*/, "", line)
+      if (match(line, /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*(true|false)[[:space:]]*$/, m)) {
+        result=m[1]
+        print result
+        exit
+      }
+    }
+    END {
+      if (result == "") print "false"
+    }
+  ' "$CONFIG_FILE"
+}
+
+resolve_feishu_enabled() {
+  local opt
+  opt="$(to_lower "$PA_ENABLE_FEISHU")"
+  if [[ "$opt" == "auto" || -z "$opt" ]]; then
+    FEISHU_ENABLED="$(read_feishu_enabled_from_config)"
+    FEISHU_SOURCE="config"
+    return 0
+  fi
+  if is_truthy "$opt"; then
+    FEISHU_ENABLED="true"
+    FEISHU_SOURCE="env"
+    return 0
+  fi
+  if is_falsy "$opt"; then
+    FEISHU_ENABLED="false"
+    FEISHU_SOURCE="env"
+    return 0
+  fi
+  echo "警告: PA_ENABLE_FEISHU=$PA_ENABLE_FEISHU 无法识别，改为读取配置 [feishu].enabled"
+  FEISHU_ENABLED="$(read_feishu_enabled_from_config)"
+  FEISHU_SOURCE="config"
+}
+
+gateway_start_args() {
+  if [[ "$FEISHU_ENABLED" == "true" ]]; then
+    echo "start --enable-feishu"
+  else
+    echo "start"
+  fi
+}
 
 mkdir -p "$LOG_DIR" "$RUN_DIR"
+resolve_feishu_enabled
 
 is_port_in_use() {
   local port="$1"
@@ -183,7 +261,10 @@ stop_component() {
 
 start_gateway_background() {
   cd "$REPO_ROOT"
-  "$BIN" start >>"$LOG_DIR/gateway.log" 2>&1 &
+  local args
+  args="$(gateway_start_args)"
+  # shellcheck disable=SC2086
+  "$BIN" $args >>"$LOG_DIR/gateway.log" 2>&1 &
   echo "$!" > "$GW_PID_FILE"
 }
 
@@ -199,7 +280,10 @@ start_web_background() {
 
 start_gateway() {
   cd "$REPO_ROOT"
-  "$BIN" start >>"$LOG_DIR/gateway.log" 2>&1
+  local args
+  args="$(gateway_start_args)"
+  # shellcheck disable=SC2086
+  "$BIN" $args >>"$LOG_DIR/gateway.log" 2>&1
 }
 
 run_web() {
@@ -233,6 +317,7 @@ start_stack() {
   echo "  日志: $LOG_DIR/gateway.log 与 $LOG_DIR/web-dev.log"
   echo "  前端地址: ${WEB_URL}"
   echo "  本机探活地址: ${WEB_URL_LOCAL}"
+  echo "  飞书通道: ${FEISHU_ENABLED}（来源: ${FEISHU_SOURCE}）"
   echo "  最终地址文件: $WEB_URL_FILE"
   echo "  停止命令: $0 stop"
 }

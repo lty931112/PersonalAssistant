@@ -1,6 +1,11 @@
 # 配置说明
 
-配置文件使用 **TOML**。仓库提供示例：[config/default.toml](../config/default.toml)。运行时通过 `pa_config::Settings` 反序列化，定义见 `crates/pa-config/src/settings.rs`。
+配置文件使用 **TOML**。仓库默认采用双文件：
+
+- 核心启动配置：[config/default.toml](../config/default.toml)
+- 运行时扩展配置：[config/runtime.toml](../config/runtime.toml)
+
+运行时通过 `pa_config::Settings` 反序列化，定义见 `crates/pa-config/src/settings.rs`。
 
 ## 加载路径与回退
 
@@ -16,6 +21,15 @@
 - 否则若存在 `OPENAI_API_KEY`，将 `provider` 设为 `openai`，`model` 设为 `gpt-4o`，并写入 `llm.api_key`
 
 显式加载请使用 `Settings::load(path)` 或 `ConfigLoader::load`。
+
+## 运行时扩展配置合并
+
+当主配置存在时，加载器会自动尝试合并扩展配置（后者覆盖前者同名字段）：
+
+1. 优先读取环境变量 `PA_RUNTIME_CONFIG_PATH` 指向的 TOML 文件
+2. 若未设置该变量，则尝试主配置同目录下的 `runtime.toml`
+
+用途：将不影响进程启动的配置（如 persona / security / observability / alert）从主配置中拆出，降低启动风险。
 
 根二进制当前调用 `load_or_default()`；CLI 的 `-c` / `--config` 已解析但尚未传入加载器，详见根目录 [README.md](../README.md)「配置说明」。
 
@@ -82,6 +96,8 @@ api_key = "${ANTHROPIC_API_KEY}"
 | `enabled` | 启用列表；`"*"` 表示全部（见 `ToolSettings` 默认） |
 | `disabled` | 禁用工具名列表 |
 | `permission_mode` | 权限模式字符串，如 `default`、`accept_edits`、`bypass_permissions`、`plan`、`auto`（具体语义由 `pa-query` / Agent 侧解释） |
+
+> 推荐将以下章节配置放在 `config/runtime.toml`，保持 `config/default.toml` 仅含启动关键项。
 
 ### `[persona]`（「伏羲」人格与命名）
 

@@ -79,7 +79,18 @@ cargo run -- start --verbose
 
 说明：CLI 虽解析 `--config` / `-c` 并写入 `Config.config_path`，但当前根入口 `src/main.rs` 仍固定调用 `Settings::load_or_default()`，**不会**读取该路径。自定义路径需将文件放到上述标准位置之一，或扩展 `main` 中的加载逻辑。
 
-### 3.2 环境变量
+### 3.2 主配置与扩展配置（推荐）
+
+- `config/default.toml`：仅放启动关键配置（gateway/llm/memory/agent/tools/mcp/feishu/task）
+- `config/runtime.toml`：放运行时扩展配置（persona/security/observability/alert）
+
+加载器会自动把 `runtime.toml` 合并到主配置。需要自定义扩展路径时可设置：
+
+```bash
+export PA_RUNTIME_CONFIG_PATH="/opt/personal-assistant/config/runtime-production.toml"
+```
+
+### 3.3 环境变量
 
 配置文件支持 `${VAR_NAME}` 和 `${VAR_NAME:-default}` 语法引用环境变量：
 
@@ -293,11 +304,13 @@ export FEISHU_VERIFICATION_TOKEN="your_verification_token"
 - `app_id` / `app_secret` / `verification_token`：优先读 `[feishu]`，为空时回退 `FEISHU_*`
 - 端口：优先读 `[feishu].port`，`FEISHU_PORT` 可覆盖
 
-#### 步骤 4: 启动时启用飞书
+#### 步骤 4: 启动服务
 
 ```bash
-cargo run -- start --enable-feishu
+cargo run -- start
 ```
+
+说明：当配置 `[feishu].enabled = true` 时会自动启动飞书通道；`--enable-feishu` 可作为强制开关。
 
 #### 飞书通道注意事项
 
