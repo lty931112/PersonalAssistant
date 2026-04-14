@@ -120,7 +120,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 libc = "0.2"
-signal-hook = { version = "0.3", features = ["iterator", "consts"] }
+signal-hook = { version = "0.3", features = ["iterator"] }
 
 [build-dependencies]
 chrono = { workspace = true }
