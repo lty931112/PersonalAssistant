@@ -3,6 +3,7 @@
 // ============================================================
 
 import type { WSRequest, WSIncoming, WSEvent, WSResponse } from './types';
+import { getDefaultWsUrl } from './connection';
 
 /** WebSocket 事件回调类型 */
 export type WSMessageHandler = (message: WSIncoming) => void;
@@ -57,7 +58,7 @@ export class WebSocketClient {
 
   /** 获取 WebSocket URL（含 `token` 查询参数，与 Gateway `auth_token` 一致） */
   private getUrl(): string {
-    let base = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:19870/ws';
+    let base = getDefaultWsUrl();
     let token = '';
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('pa_settings');

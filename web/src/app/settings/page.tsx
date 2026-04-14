@@ -5,6 +5,7 @@ import { useApp } from '@/lib/store';
 import ThemeToggle from '@/components/ThemeToggle';
 import { healthCheck, getAlertConfig, updateAlertConfig, getWatchdogConfig, updateWatchdogConfig } from '@/lib/api';
 import type { AlertConfig, WatchdogConfig } from '@/lib/types';
+import { getDefaultApiBaseUrl, getDefaultWsUrl } from '@/lib/connection';
 
 /**
  * 设置页
@@ -111,8 +112,8 @@ export default function SettingsPage() {
   /** 重置连接设置 */
   const handleReset = () => {
     const defaults = {
-      apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:19870/api',
-      wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:19870/ws',
+      apiBaseUrl: getDefaultApiBaseUrl(),
+      wsUrl: getDefaultWsUrl(),
       gatewayToken: process.env.NEXT_PUBLIC_GATEWAY_TOKEN || '',
       theme: state.theme,
     };

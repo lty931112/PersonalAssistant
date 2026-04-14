@@ -12,6 +12,7 @@ import type {
   MetricsData,
   ToolApprovalRequest,
 } from './types';
+import { getDefaultApiBaseUrl } from './connection';
 
 /**
  * 获取 API 基础地址
@@ -29,7 +30,7 @@ function getApiBaseUrl(): string {
       }
     }
   }
-  return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:19870/api';
+  return getDefaultApiBaseUrl();
 }
 
 /** 去掉 `/api` 后缀，用于 `/health`、`/metrics` 等根路径 */

@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { WebSocketClient, type WSMessageHandler, type WSConnectionState } from './websocket';
 import { getTasks, getAgents, getPendingApprovals, respondApproval } from './api';
+import { getDefaultApiBaseUrl, getDefaultWsUrl } from './connection';
 
 // ============================================================
 // 状态类型定义
@@ -96,8 +97,8 @@ type Action =
 // ============================================================
 
 const defaultSettings: AppSettings = {
-  apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:19870/api',
-  wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:19870/ws',
+  apiBaseUrl: getDefaultApiBaseUrl(),
+  wsUrl: getDefaultWsUrl(),
   gatewayToken: typeof process !== 'undefined' ? (process.env.NEXT_PUBLIC_GATEWAY_TOKEN || '') : '',
   theme: 'dark',
 };
