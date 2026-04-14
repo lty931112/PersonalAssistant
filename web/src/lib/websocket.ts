@@ -3,7 +3,7 @@
 // ============================================================
 
 import type { WSRequest, WSIncoming, WSEvent, WSResponse } from './types';
-import { getDefaultWsUrl } from './connection';
+import { getDefaultWsUrl, normalizeUrlForBrowser } from './connection';
 
 /** WebSocket 事件回调类型 */
 export type WSMessageHandler = (message: WSIncoming) => void;
@@ -65,7 +65,7 @@ export class WebSocketClient {
       if (saved) {
         try {
           const settings = JSON.parse(saved) as { wsUrl?: string; gatewayToken?: string };
-          if (settings.wsUrl) base = settings.wsUrl;
+          if (settings.wsUrl) base = normalizeUrlForBrowser(settings.wsUrl);
           if (typeof settings.gatewayToken === 'string') token = settings.gatewayToken.trim();
         } catch {
           // 解析失败，使用默认值

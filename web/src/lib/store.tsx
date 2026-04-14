@@ -21,7 +21,7 @@ import type {
 } from './types';
 import { WebSocketClient, type WSMessageHandler, type WSConnectionState } from './websocket';
 import { getTasks, getAgents, getPendingApprovals, respondApproval } from './api';
-import { getDefaultApiBaseUrl, getDefaultWsUrl } from './connection';
+import { getDefaultApiBaseUrl, getDefaultWsUrl, normalizeUrlForBrowser } from './connection';
 
 // ============================================================
 // 状态类型定义
@@ -307,7 +307,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Partial<AppSettings>;
-        const settings: AppSettings = { ...defaultSettings, ...parsed };
+        const settings: AppSettings = {
+          ...defaultSettings,
+          ...parsed,
+          apiBaseUrl: parsed.apiBaseUrl ? normalizeUrlForBrowser(parsed.apiBaseUrl) : defaultSettings.apiBaseUrl,
+          wsUrl: parsed.wsUrl ? normalizeUrlForBrowser(parsed.wsUrl) : defaultSettings.wsUrl,
+        };
         dispatch({ type: 'SET_SETTINGS', payload: settings });
         dispatch({ type: 'SET_THEME', payload: settings.theme });
       } catch {

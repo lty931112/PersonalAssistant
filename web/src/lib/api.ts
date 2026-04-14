@@ -12,7 +12,7 @@ import type {
   MetricsData,
   ToolApprovalRequest,
 } from './types';
-import { getDefaultApiBaseUrl } from './connection';
+import { getDefaultApiBaseUrl, normalizeUrlForBrowser } from './connection';
 
 /**
  * 获取 API 基础地址
@@ -24,7 +24,7 @@ function getApiBaseUrl(): string {
     if (saved) {
       try {
         const settings = JSON.parse(saved);
-        if (settings.apiBaseUrl) return settings.apiBaseUrl;
+        if (settings.apiBaseUrl) return normalizeUrlForBrowser(settings.apiBaseUrl);
       } catch {
         // 解析失败，使用默认值
       }
