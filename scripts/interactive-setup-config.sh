@@ -127,7 +127,7 @@ yes_no() {
 
 # 浏览器打开前端（WSL 下优先用 Windows 默认浏览器）
 open_frontend_in_browser() {
-  local url="${1:-http://127.0.0.1:3000}"
+  local url="${1:-http://127.0.0.1:3333}"
   if command -v cmd.exe >/dev/null 2>&1; then
     cmd.exe /c start "" "$url" 2>/dev/null || true
   elif command -v wslview >/dev/null 2>&1; then
@@ -137,6 +137,24 @@ open_frontend_in_browser() {
   else
     echo "未找到 cmd.exe / wslview / xdg-open，请手动打开: $url"
   fi
+}
+
+resolve_frontend_url_after_start() {
+  local fallback_url="$1"
+  local url_file="${REPO_ROOT}/.pa/logs/web-dev.url"
+  local i
+  for i in {1..12}; do
+    if [[ -s "${url_file}" ]]; then
+      local detected
+      detected="$(tr -d '\r' < "${url_file}" | xargs || true)"
+      if [[ -n "${detected}" ]]; then
+        echo "${detected}"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "${fallback_url}"
 }
 
 # 供前端环境变量：绑定为 0.0.0.0 时用 127.0.0.1 访问本机页面
@@ -203,6 +221,8 @@ main() {
   echo "PersonalAssistant — 配置向导"
   echo "输出目录: ${CONFIG_DIR}"
   echo ""
+
+  FE_PORT="${PA_WEB_PORT:-3333}"
 
   show_volcengine_codeplan_guide
   show_feishu_guide
@@ -453,8 +473,12 @@ EOF
     else
       bash "${REPO_ROOT}/scripts/pa-dev-stack.sh" background
       echo "等待服务就绪后打开浏览器…"
-      sleep 4
-      open_frontend_in_browser "http://${fe_host}:3000"
+      local fallback_url
+      local final_url
+      fallback_url="http://${fe_host}:${FE_PORT}"
+      final_url="$(resolve_frontend_url_after_start "${fallback_url}")"
+      echo "前端最终可访问 URL: ${final_url}"
+      open_frontend_in_browser "${final_url}"
     fi
   fi
 
