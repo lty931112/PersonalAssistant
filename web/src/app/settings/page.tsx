@@ -370,7 +370,11 @@ export default function SettingsPage() {
                         value={alertConfig.feishu?.chat_id || ''}
                         onChange={(e) => setAlertConfig({
                           ...alertConfig,
-                          feishu: { ...alertConfig.feishu, chat_id: e.target.value, app_id: alertConfig.feishu?.app_id || '', app_secret: alertConfig.feishu?.app_secret || '' } || { chat_id: e.target.value, app_id: '', app_secret: '' },
+                          feishu: {
+                            chat_id: e.target.value,
+                            app_id: alertConfig.feishu?.app_id ?? '',
+                            app_secret: alertConfig.feishu?.app_secret ?? '',
+                          },
                         })}
                         className="input font-mono text-sm"
                         placeholder="oc_xxxxxxxxxxxxxxxx"
@@ -383,7 +387,11 @@ export default function SettingsPage() {
                         value={alertConfig.feishu?.app_id || ''}
                         onChange={(e) => setAlertConfig({
                           ...alertConfig,
-                          feishu: { ...alertConfig.feishu, chat_id: alertConfig.feishu?.chat_id || '', app_id: e.target.value, app_secret: alertConfig.feishu?.app_secret || '' } || { chat_id: '', app_id: e.target.value, app_secret: '' },
+                          feishu: {
+                            chat_id: alertConfig.feishu?.chat_id ?? '',
+                            app_id: e.target.value,
+                            app_secret: alertConfig.feishu?.app_secret ?? '',
+                          },
                         })}
                         className="input font-mono text-sm"
                         placeholder="cli_xxxxxxxxxx"
@@ -396,7 +404,11 @@ export default function SettingsPage() {
                         value={alertConfig.feishu?.app_secret || ''}
                         onChange={(e) => setAlertConfig({
                           ...alertConfig,
-                          feishu: { ...alertConfig.feishu, chat_id: alertConfig.feishu?.chat_id || '', app_id: alertConfig.feishu?.app_id || '', app_secret: e.target.value } || { chat_id: '', app_id: '', app_secret: e.target.value },
+                          feishu: {
+                            chat_id: alertConfig.feishu?.chat_id ?? '',
+                            app_id: alertConfig.feishu?.app_id ?? '',
+                            app_secret: e.target.value,
+                          },
                         })}
                         className="input font-mono text-sm"
                         placeholder="••••••••"
