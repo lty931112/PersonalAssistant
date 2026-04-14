@@ -471,7 +471,7 @@ EOF
     elif ! command -v npm >/dev/null 2>&1; then
       echo "未找到 npm，请安装 Node.js 后再启动前端。"
     else
-      bash "${REPO_ROOT}/scripts/pa-dev-stack.sh" background
+      bash "${REPO_ROOT}/scripts/pa-dev-stack.sh" start
       echo "等待服务就绪后打开浏览器…"
       local fallback_url
       local final_url
