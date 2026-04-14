@@ -118,7 +118,7 @@ impl FeishuChannel {
 
         // 构建 axum 路由
         let app_state = AppState {
-            client,
+            _client: client,
             event_handler,
             event_sender,
             config,
@@ -180,8 +180,8 @@ impl FeishuChannel {
 /// axum 应用状态
 #[derive(Clone)]
 struct AppState {
-    /// 飞书 API 客户端
-    client: Arc<FeishuClient>,
+    /// 飞书 API 客户端（路由中通过 event_handler 间接使用）
+    _client: Arc<FeishuClient>,
     /// 事件处理器
     event_handler: Arc<FeishuEventHandler>,
     /// 事件发送通道

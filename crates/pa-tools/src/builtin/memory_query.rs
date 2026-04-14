@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use pa_core::{CoreError, ToolResult};
-use pa_memory::{MemoryConfig, MagmaMemoryEngine};
+use pa_memory::MagmaMemoryEngine;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing;

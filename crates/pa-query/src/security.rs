@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pa_config::SecuritySettings;
+use pa_config::settings::SecuritySettings;
 
 /// 查询引擎使用的安全策略（由配置 + 启动时工作目录解析得到）
 #[derive(Debug, Clone)]
@@ -39,8 +39,8 @@ impl SecurityPolicy {
         }
 
         let workspace_roots: Vec<PathBuf> = roots
-            .into_iter()
-            .filter_map(|p| normalize_root(&p, cwd).ok())
+            .iter()
+            .filter_map(|p| normalize_root(p.as_path(), cwd).ok())
             .collect();
 
         Self {

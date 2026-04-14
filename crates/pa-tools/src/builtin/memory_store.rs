@@ -82,11 +82,6 @@ impl Tool for MemoryStoreTool {
             _ => MemoryNodeType::Observation,
         };
 
-        let tags: Vec<String> = input["tags"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default();
-
         tracing::info!(content_len = content.len(), node_type = %node_type_str, "存储记忆");
 
         let mut engine = self.memory.write().await;

@@ -23,9 +23,7 @@ pub struct QueryConfig {
     ///
     /// 当累计费用超过此限制时，查询将被终止。
     pub max_budget_usd: Option<f64>,
-    /// 备用模型名称（可选）
-    ///
-    /// 当主模型返回 529 过载错误时，自动切换到备用模型。
+    /// 备用模型名称（可选，查询层元数据；实际切换由 `pa_llm` 与全局 LLM 配置控制）
     pub fallback_model: Option<String>,
     /// 系统提示词
     pub system_prompt: String,

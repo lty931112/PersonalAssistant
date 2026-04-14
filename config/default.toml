@@ -22,8 +22,10 @@ api_key = "${ANTHROPIC_API_KEY}"
 base_url = ""
 # 最大 token 数
 max_tokens = 8192
-# 备用模型
+# 备用模型（名称需与提供商一致）
 fallback_model = "claude-3-5-sonnet-20241022"
+# 为 true 时：仅当主模型被严格判定为不可用且本机对备用模型探测成功后才切换；429/529 不会触发切换
+fallback_switch_enabled = false
 
 [memory]
 # 是否启用记忆

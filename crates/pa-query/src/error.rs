@@ -28,7 +28,8 @@ impl ErrorClassifier {
                 let ms = retry_after.map(|s| (s * 1000.0) as u64).unwrap_or(1000);
                 ErrorAction::Retry { after_ms: ms }
             }
-            CoreError::Overloaded(_) => ErrorAction::FallbackModel,
+            // 529 等过载：与 LLM 层一致，退避重试同一模型，不因过载自动换备用模型
+            CoreError::Overloaded(_) => ErrorAction::Retry { after_ms: 2000 },
             CoreError::ContextWindowExceeded => ErrorAction::AutoCompact,
             CoreError::Authentication(_) => ErrorAction::Abort,
             CoreError::PermissionDenied { .. } => ErrorAction::Abort,

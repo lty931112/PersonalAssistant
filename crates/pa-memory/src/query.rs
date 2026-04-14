@@ -315,7 +315,7 @@ impl MemoryQueryEngine {
         let mut current = String::new();
         for ch in query.chars() {
             match ch {
-                '"' | '"' | '"' | '\'' | '\'' | '\'' => {
+                '"' | '\'' => {
                     if in_quotes {
                         if !current.trim().is_empty() {
                             entities.push(current.trim().to_string());

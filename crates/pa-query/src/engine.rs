@@ -709,7 +709,6 @@ impl QueryEngine {
 
             // 用于跟踪当前正在构建的工具使用块
             let mut current_tool_id: Option<String> = None;
-            let mut current_tool_name: Option<String> = None;
 
             while let Some(event) = stream_rx.recv().await {
                 // 流式消费过程中也检查取消
@@ -739,7 +738,6 @@ impl QueryEngine {
                         }
 
                         current_tool_id = Some(id.clone());
-                        current_tool_name = Some(name.clone());
                         tool_use_inputs.insert(id.clone(), (name.clone(), String::new()));
 
                         tracing::debug!(tool_id = %id, tool_name = %name, "流式：工具使用开始");
@@ -758,7 +756,6 @@ impl QueryEngine {
                             content_blocks.push(ContentBlock::tool_use(&id, &name, input_value));
                         }
                         current_tool_id = None;
-                        current_tool_name = None;
                     }
                     LlmStreamEvent::ThinkingDelta { delta } => {
                         // 思考内容可以作为状态事件转发
@@ -902,7 +899,7 @@ impl QueryEngine {
         messages: &[Message],
         tools: &[pa_core::ToolDefinition],
         system: &str,
-        event_tx: &mpsc::Sender<QueryEvent>,
+        _event_tx: &mpsc::Sender<QueryEvent>,
     ) -> Result<mpsc::Receiver<LlmStreamEvent>, CoreError> {
         let response = self.llm_client.complete(messages, tools, system).await?;
 

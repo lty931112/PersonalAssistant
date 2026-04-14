@@ -140,6 +140,8 @@ fn create_llm_client(settings: &Settings) -> Result<Box<dyn pa_llm::LlmClientTra
             llm_config = llm_config.with_fallback_model(fallback);
         }
     }
+    llm_config =
+        llm_config.with_fallback_switch_enabled(settings.llm.fallback_switch_enabled);
 
     // 创建客户端
     let client = LlmClient::new(&llm_config)

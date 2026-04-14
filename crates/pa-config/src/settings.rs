@@ -133,6 +133,9 @@ pub struct LlmSettings {
     pub max_tokens: u32,
     /// 备用模型
     pub fallback_model: Option<String>,
+    /// 主模型被严格判定为不可用时，是否允许在探测通过后切换到备用模型
+    #[serde(default)]
+    pub fallback_switch_enabled: bool,
 }
 
 impl Default for LlmSettings {
@@ -144,6 +147,7 @@ impl Default for LlmSettings {
             base_url: None,
             max_tokens: 8192,
             fallback_model: None,
+            fallback_switch_enabled: false,
         }
     }
 }

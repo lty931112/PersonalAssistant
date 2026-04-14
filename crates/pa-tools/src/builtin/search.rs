@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use pa_core::{CoreError, ToolResult};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::collections::VecDeque;
 
 use crate::registry::Tool;

@@ -65,7 +65,7 @@ enum AnthropicContentBlock {
 }
 
 /// Anthropic 工具定义
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicTool {
     name: String,
     description: String,
@@ -112,6 +112,7 @@ pub struct AnthropicClient {
     max_tokens: u32,
     temperature: f32,
     fallback_model: Option<String>,
+    fallback_switch_enabled: bool,
     max_retries: u32,
     api_version: String,
 }
@@ -139,6 +140,7 @@ impl AnthropicClient {
             max_tokens: config.max_tokens,
             temperature: config.temperature,
             fallback_model: config.fallback_model.clone(),
+            fallback_switch_enabled: config.fallback_switch_enabled,
             max_retries: config.max_retries,
             api_version: "2023-06-01".to_string(),
         })
@@ -294,6 +296,91 @@ impl AnthropicClient {
             })
             .collect()
     }
+
+    fn anthropic_error_message(body: &str) -> String {
+        #[derive(Deserialize)]
+        struct ErrBody {
+            error: Option<AnthropicError>,
+        }
+        serde_json::from_str::<ErrBody>(body)
+            .ok()
+            .and_then(|b| b.error.map(|e| e.message))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| body.chars().take(4096).collect())
+    }
+
+    /// 用极小请求探测指定模型是否可用（与真实请求相同端点与鉴权）。
+    async fn probe_model_availability(&self, model: &str) -> bool {
+        let probe = MessagesRequest {
+            model: model.to_string(),
+            max_tokens: 1,
+            temperature: Some(self.temperature),
+            system: None,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContentBlock::Text { text: ".".into() }],
+            }],
+            stream: false,
+            tools: vec![],
+        };
+        let url = format!("{}/v1/messages", self.base_url);
+        let Ok(headers) = self.build_headers() else {
+            return false;
+        };
+        let Ok(resp) = self
+            .http_client
+            .post(&url)
+            .headers(headers)
+            .json(&probe)
+            .send()
+            .await
+        else {
+            return false;
+        };
+        resp.status().is_success()
+    }
+
+    /// 若配置允许且错误满足严格判定，则探测并切换到备用模型。
+    async fn try_fallback_after_primary_failure(
+        &self,
+        status: u16,
+        message: &str,
+        active_model: &mut String,
+        switched_to_fallback: &mut bool,
+        attempt: &mut u32,
+    ) -> bool {
+        if !self.fallback_switch_enabled {
+            return false;
+        }
+        if *switched_to_fallback {
+            return false;
+        }
+        if !crate::fallback::primary_model_unreachable_for_fallback(status, message) {
+            return false;
+        }
+        let Some(ref fb) = self.fallback_model else {
+            return false;
+        };
+        if fb.is_empty() || fb == active_model.as_str() {
+            return false;
+        }
+        if !self.probe_model_availability(fb).await {
+            tracing::warn!(
+                fallback = %fb,
+                "主模型不可用（严格判定），但备用模型探测未通过，保持原错误流程"
+            );
+            return false;
+        }
+        tracing::warn!(
+            primary = %active_model,
+            fallback = %fb,
+            "主模型不可用（严格判定），备用模型探测成功，切换模型后重试"
+        );
+        *active_model = fb.clone();
+        *switched_to_fallback = true;
+        *attempt = 0;
+        true
+    }
 }
 
 #[async_trait]
@@ -304,32 +391,33 @@ impl LlmClientTrait for AnthropicClient {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<LlmResponse, CoreError> {
-        let model_name = &self.model;
         let anthropic_messages = Self::convert_messages(messages);
         let anthropic_tools = Self::convert_tools(tools);
-
-        let request_body = MessagesRequest {
-            model: model_name.to_string(),
-            max_tokens: self.max_tokens,
-            temperature: Some(self.temperature),
-            system: if system.is_empty() {
-                None
-            } else {
-                Some(system.to_string())
-            },
-            messages: anthropic_messages,
-            stream: false,
-            tools: anthropic_tools,
-        };
 
         let url = format!("{}/v1/messages", self.base_url);
         let headers = self.build_headers()?;
 
-        tracing::debug!(url = %url, model = %model_name, "发送 Anthropic 非流式请求");
+        let mut active_model = self.model.clone();
+        let mut switched_to_fallback = false;
+        let mut attempt: u32 = 0;
 
-        // 带重试的请求
-        let mut last_error = None;
-        for attempt in 0..=self.max_retries {
+        loop {
+            let request_body = MessagesRequest {
+                model: active_model.clone(),
+                max_tokens: self.max_tokens,
+                temperature: Some(self.temperature),
+                system: if system.is_empty() {
+                    None
+                } else {
+                    Some(system.to_string())
+                },
+                messages: anthropic_messages.clone(),
+                stream: false,
+                tools: anthropic_tools.clone(),
+            };
+
+            tracing::debug!(url = %url, model = %active_model, "发送 Anthropic 非流式请求");
+
             let resp = self
                 .http_client
                 .post(&url)
@@ -340,76 +428,122 @@ impl LlmClientTrait for AnthropicClient {
                 .map_err(|e| LlmError::RequestFailed(e.to_string()))?;
 
             let status = resp.status();
-            let body = resp.text().await.map_err(|e| LlmError::RequestFailed(e.to_string()))?;
+            let status_u16 = status.as_u16();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| LlmError::RequestFailed(e.to_string()))?;
 
-            if !status.is_success() {
-                if let Ok(err_resp) = serde_json::from_str::<MessagesResponse>(&body) {
-                    if let Some(error) = err_resp.error {
-                        let api_err = LlmError::ApiError {
-                            status: status.as_u16(),
-                            message: error.message,
-                        };
-                        match status.as_u16() {
-                            429 if attempt < self.max_retries => {
-                                let wait_ms = 1000u64 * 2u64.pow(attempt);
-                                tracing::warn!(attempt = attempt + 1, wait_ms, "Anthropic 速率限制");
-                                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-                                last_error = Some(api_err);
-                                continue;
-                            }
-                            529 if attempt < self.max_retries => {
-                                let wait_ms = 2000u64 * 2u64.pow(attempt);
-                                tracing::warn!(attempt = attempt + 1, wait_ms, "Anthropic 服务过载");
-                                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-                                last_error = Some(api_err);
-                                continue;
-                            }
-                            _ => return Err(api_err.into()),
-                        }
-                    }
-                }
-                return Err(LlmError::ApiError {
-                    status: status.as_u16(),
-                    message: body,
-                }
-                .into());
-            }
-
-            let response: MessagesResponse =
-                serde_json::from_str(&body).map_err(|e| {
+            if status.is_success() {
+                let response: MessagesResponse = serde_json::from_str(&body).map_err(|e| {
                     LlmError::ParseError(format!("响应解析失败: {}", e))
                 })?;
 
-            let content = Self::parse_content_blocks(&response.content);
-            let stop_reason = Self::parse_stop_reason(response.stop_reason.as_deref());
+                let content = Self::parse_content_blocks(&response.content);
+                let stop_reason = Self::parse_stop_reason(response.stop_reason.as_deref());
 
-            let usage = UsageInfo {
-                input_tokens: response.usage.input_tokens,
-                output_tokens: response.usage.output_tokens,
-                cache_read_tokens: response.usage.cache_read_input_tokens,
-                cache_creation_tokens: response.usage.cache_creation_input_tokens,
-            };
+                let usage = UsageInfo {
+                    input_tokens: response.usage.input_tokens,
+                    output_tokens: response.usage.output_tokens,
+                    cache_read_tokens: response.usage.cache_read_input_tokens,
+                    cache_creation_tokens: response.usage.cache_creation_input_tokens,
+                };
 
-            let model = response.model.unwrap_or_else(|| model_name.to_string());
+                let model = response
+                    .model
+                    .unwrap_or_else(|| active_model.clone());
 
-            tracing::debug!(
-                stop_reason = %stop_reason,
-                input_tokens = usage.input_tokens,
-                output_tokens = usage.output_tokens,
-                "Anthropic 非流式请求完成"
+                tracing::debug!(
+                    stop_reason = %stop_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "Anthropic 非流式请求完成"
+                );
+
+                return Ok(LlmResponse {
+                    content,
+                    stop_reason,
+                    usage,
+                    model,
+                });
+            }
+
+            let err_text = Self::anthropic_error_message(&body);
+
+            if let Ok(err_resp) = serde_json::from_str::<MessagesResponse>(&body) {
+                if let Some(error) = err_resp.error {
+                    let api_err = LlmError::ApiError {
+                        status: status_u16,
+                        message: error.message.clone(),
+                    };
+                    match status_u16 {
+                        429 if attempt < self.max_retries => {
+                            let wait_ms = 1000u64 * 2u64.pow(attempt);
+                            tracing::warn!(attempt = attempt + 1, wait_ms, "Anthropic 速率限制");
+                            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        529 if attempt < self.max_retries => {
+                            let wait_ms = 2000u64 * 2u64.pow(attempt);
+                            tracing::warn!(attempt = attempt + 1, wait_ms, "Anthropic 服务过载");
+                            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        _ => {
+                            if self
+                                .try_fallback_after_primary_failure(
+                                    status_u16,
+                                    &error.message,
+                                    &mut active_model,
+                                    &mut switched_to_fallback,
+                                    &mut attempt,
+                                )
+                                .await
+                            {
+                                continue;
+                            }
+                            return Err(api_err.into());
+                        }
+                    }
+                }
+            }
+
+            if status_u16 == 429 && attempt < self.max_retries {
+                let wait_ms = 1000u64 * 2u64.pow(attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                attempt += 1;
+                continue;
+            }
+            if status_u16 == 529 && attempt < self.max_retries {
+                let wait_ms = 2000u64 * 2u64.pow(attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                attempt += 1;
+                continue;
+            }
+
+            if self
+                .try_fallback_after_primary_failure(
+                    status_u16,
+                    &err_text,
+                    &mut active_model,
+                    &mut switched_to_fallback,
+                    &mut attempt,
+                )
+                .await
+            {
+                continue;
+            }
+
+            return Err(
+                LlmError::ApiError {
+                    status: status_u16,
+                    message: err_text,
+                }
+                .into(),
             );
-
-            return Ok(LlmResponse {
-                content,
-                stop_reason,
-                usage,
-                model,
-            });
         }
-
-        Err(last_error
-            .unwrap_or_else(|| LlmError::RetriesExhausted("未知错误".to_string()))
-            .into())
     }
 
     async fn stream(
@@ -418,57 +552,149 @@ impl LlmClientTrait for AnthropicClient {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<mpsc::Receiver<LlmStreamEvent>, CoreError> {
-        let model_name = &self.model;
         let anthropic_messages = Self::convert_messages(messages);
         let anthropic_tools = Self::convert_tools(tools);
-
-        let request_body = MessagesRequest {
-            model: model_name.to_string(),
-            max_tokens: self.max_tokens,
-            temperature: Some(self.temperature),
-            system: if system.is_empty() {
-                None
-            } else {
-                Some(system.to_string())
-            },
-            messages: anthropic_messages,
-            stream: true,
-            tools: anthropic_tools,
-        };
-
         let url = format!("{}/v1/messages", self.base_url);
         let headers = self.build_headers()?;
 
-        tracing::debug!(url = %url, model = %model_name, "发送 Anthropic 流式请求");
+        let mut active_model = self.model.clone();
+        let mut switched_to_fallback = false;
+        let mut attempt: u32 = 0;
 
-        let (tx, rx) = mpsc::channel(256);
-        let client = self.http_client.clone();
-
-        tokio::spawn(async move {
-            let result = client.post(&url).headers(headers).json(&request_body).send().await;
-
-            let response = match result {
-                Ok(resp) => resp,
-                Err(e) => {
-                    let _ = tx.send(LlmStreamEvent::Error(format!("请求失败: {}", e))).await;
-                    return;
-                }
+        loop {
+            let request_body = MessagesRequest {
+                model: active_model.clone(),
+                max_tokens: self.max_tokens,
+                temperature: Some(self.temperature),
+                system: if system.is_empty() {
+                    None
+                } else {
+                    Some(system.to_string())
+                },
+                messages: anthropic_messages.clone(),
+                stream: true,
+                tools: anthropic_tools.clone(),
             };
 
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                let _ = tx
-                    .send(LlmStreamEvent::Error(format!("API 错误 [{}]: {}", status, body)))
-                    .await;
-                return;
+            tracing::debug!(url = %url, model = %active_model, "发送 Anthropic 流式请求");
+
+            let resp = match self
+                .http_client
+                .post(&url)
+                .headers(headers.clone())
+                .json(&request_body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return Err(LlmError::RequestFailed(e.to_string()).into()),
+            };
+
+            let status = resp.status();
+            if status.is_success() {
+                let (tx, rx) = mpsc::channel(256);
+                tokio::spawn(forward_anthropic_sse_stream(resp, tx));
+                return Ok(rx);
             }
 
-            // 处理 SSE 流
-            let mut stream = response.bytes_stream();
+            let status_u16 = status.as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            let err_summary = Self::anthropic_error_message(&body);
+
+            if let Ok(err_resp) = serde_json::from_str::<MessagesResponse>(&body) {
+                if let Some(error) = err_resp.error {
+                    match status_u16 {
+                        429 if attempt < self.max_retries => {
+                            let wait_ms = 1000u64 * 2u64.pow(attempt);
+                            tracing::warn!(attempt = attempt + 1, wait_ms, "Anthropic 速率限制（流式首包）");
+                            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        529 if attempt < self.max_retries => {
+                            let wait_ms = 2000u64 * 2u64.pow(attempt);
+                            tracing::warn!(attempt = attempt + 1, wait_ms, "Anthropic 服务过载（流式首包）");
+                            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        _ => {
+                            if self
+                                .try_fallback_after_primary_failure(
+                                    status_u16,
+                                    &error.message,
+                                    &mut active_model,
+                                    &mut switched_to_fallback,
+                                    &mut attempt,
+                                )
+                                .await
+                            {
+                                continue;
+                            }
+                            return Err(
+                                LlmError::ApiError {
+                                    status: status_u16,
+                                    message: error.message,
+                                }
+                                .into(),
+                            );
+                        }
+                    }
+                }
+            }
+
+            if status_u16 == 429 && attempt < self.max_retries {
+                let wait_ms = 1000u64 * 2u64.pow(attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                attempt += 1;
+                continue;
+            }
+            if status_u16 == 529 && attempt < self.max_retries {
+                let wait_ms = 2000u64 * 2u64.pow(attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                attempt += 1;
+                continue;
+            }
+
+            if self
+                .try_fallback_after_primary_failure(
+                    status_u16,
+                    &err_summary,
+                    &mut active_model,
+                    &mut switched_to_fallback,
+                    &mut attempt,
+                )
+                .await
+            {
+                continue;
+            }
+
+            return Err(
+                LlmError::ApiError {
+                    status: status_u16,
+                    message: err_summary,
+                }
+                .into(),
+            );
+        }
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn provider(&self) -> &str {
+        "Anthropic"
+    }
+}
+
+async fn forward_anthropic_sse_stream(
+    mut response: reqwest::Response,
+    tx: mpsc::Sender<LlmStreamEvent>,
+) {
+ let mut stream = response.bytes_stream();
             let mut buffer = String::new();
             let mut current_tool_id: Option<String> = None;
-            let mut current_tool_name: Option<String> = None;
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -526,12 +752,11 @@ impl LlmClientTrait for AnthropicClient {
                                         if let Some(block) = parsed.content_block {
                                             match block.r#type.as_str() {
                                                 "tool_use" => {
-                                                    current_tool_id = block.id;
-                                                    current_tool_name = block.name;
-                                                    if let (Some(id), Some(name)) = (&current_tool_id, &current_tool_name) {
+                                                    current_tool_id = block.id.clone();
+                                                    if let (Some(id), Some(name)) = (block.id.clone(), block.name.clone()) {
                                                         let _ = tx.send(LlmStreamEvent::ToolUseStart {
-                                                            id: id.clone(),
-                                                            name: name.clone(),
+                                                            id,
+                                                            name,
                                                         }).await;
                                                     }
                                                 }
@@ -587,7 +812,6 @@ impl LlmClientTrait for AnthropicClient {
                                             id: current_tool_id.clone().unwrap(),
                                         }).await;
                                         current_tool_id = None;
-                                        current_tool_name = None;
                                     }
                                 }
                                 Some("message_delta") => {
@@ -603,7 +827,7 @@ impl LlmClientTrait for AnthropicClient {
 
                                     if let Ok(parsed) = serde_json::from_str::<MessageDelta>(&data_str) {
                                         if let Some(reason) = parsed.stop_reason {
-                                            let stop_reason = Self::parse_stop_reason(Some(&reason));
+                                            let stop_reason = AnthropicClient::parse_stop_reason(Some(&reason));
                                             let _ = tx.send(LlmStreamEvent::Stop { reason: stop_reason }).await;
                                         }
                                         if let Some(usage) = parsed.usage {
@@ -641,16 +865,4 @@ impl LlmClientTrait for AnthropicClient {
                     }
                 }
             }
-        });
-
-        Ok(rx)
-    }
-
-    fn model(&self) -> &str {
-        &self.model
-    }
-
-    fn provider(&self) -> &str {
-        "Anthropic"
-    }
 }

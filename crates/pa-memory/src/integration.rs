@@ -20,8 +20,8 @@ use crate::vector::InMemoryVectorStore;
 pub struct MemoryIntegrator<'a> {
     /// 图数据库引用
     graph_db: &'a InMemoryGraphDB,
-    /// 向量存储引用
-    vector_store: &'a InMemoryVectorStore,
+    /// 向量存储引用（保留用于后续整合阶段直接操作向量索引）
+    _vector_store: &'a InMemoryVectorStore,
     /// 记忆配置
     config: &'a MemoryConfig,
 }
@@ -35,7 +35,7 @@ impl<'a> MemoryIntegrator<'a> {
     ) -> Self {
         Self {
             graph_db,
-            vector_store,
+            _vector_store: vector_store,
             config,
         }
     }
@@ -149,7 +149,6 @@ impl<'a> MemoryIntegrator<'a> {
 
         for node in candidates {
             let mut context = NodeContext {
-                node_id: node.id.clone(),
                 neighbors_by_graph: HashMap::new(),
                 total_connections: 0,
             };
@@ -558,8 +557,6 @@ impl<'a> MemoryIntegrator<'a> {
 /// 节点上下文 - 整合过程中收集的节点信息
 #[derive(Debug, Clone)]
 struct NodeContext {
-    /// 节点 ID
-    node_id: String,
     /// 各图谱中的邻居数量
     neighbors_by_graph: HashMap<GraphType, usize>,
     /// 总连接数

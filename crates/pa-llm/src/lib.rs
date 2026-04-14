@@ -11,6 +11,7 @@
 //! - 备用模型切换
 
 pub mod anthropic;
+mod fallback;
 pub mod openai;
 pub mod types;
 

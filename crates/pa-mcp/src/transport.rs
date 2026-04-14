@@ -114,30 +114,6 @@ impl StdioTransport {
         info!("MCP Server 子进程已启动: {}", self.command);
         Ok(())
     }
-
-    /// 获取子进程的 stdin 写入句柄
-    async fn get_stdin(&self) -> Result<tokio::process::ChildStdin, CoreError> {
-        self.ensure_started().await?;
-        let mut child_guard = self.child.lock().await;
-        let child = child_guard.as_mut().ok_or_else(|| {
-            CoreError::Internal("子进程未启动".to_string())
-        })?;
-        child.stdin.take().ok_or_else(|| {
-            CoreError::Internal("无法获取子进程 stdin".to_string())
-        })
-    }
-
-    /// 获取子进程的 stdout 读取句柄
-    async fn get_stdout(&self) -> Result<tokio::process::ChildStdout, CoreError> {
-        self.ensure_started().await?;
-        let mut child_guard = self.child.lock().await;
-        let child = child_guard.as_mut().ok_or_else(|| {
-            CoreError::Internal("子进程未启动".to_string())
-        })?;
-        child.stdout.take().ok_or_else(|| {
-            CoreError::Internal("无法获取子进程 stdout".to_string())
-        })
-    }
 }
 
 #[async_trait]

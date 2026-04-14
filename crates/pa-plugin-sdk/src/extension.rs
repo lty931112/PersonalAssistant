@@ -1,8 +1,7 @@
 //! 扩展管理器
 
 use std::collections::HashMap;
-use pa_core::CoreError;
-use crate::plugin::{Plugin, PluginContext, PluginMetadata};
+use crate::plugin::Plugin;
 
 /// 扩展类型
 #[derive(Debug, Clone)]

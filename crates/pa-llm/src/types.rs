@@ -56,6 +56,8 @@ pub struct LlmConfig {
     pub temperature: f32,
     /// 备用模型名称（当主模型出错时切换）
     pub fallback_model: Option<String>,
+    /// 是否在主模型被判定为不可用时，经探测后自动切换到 `fallback_model`
+    pub fallback_switch_enabled: bool,
     /// 最大重试次数
     pub max_retries: u32,
     /// 是否启用流式响应
@@ -73,6 +75,7 @@ impl LlmConfig {
             max_tokens: 8192,
             temperature: 0.7,
             fallback_model: None,
+            fallback_switch_enabled: false,
             max_retries: 3,
             stream: true,
         }
@@ -88,6 +91,7 @@ impl LlmConfig {
             max_tokens: 8192,
             temperature: 0.7,
             fallback_model: None,
+            fallback_switch_enabled: false,
             max_retries: 3,
             stream: true,
         }
@@ -114,6 +118,12 @@ impl LlmConfig {
     /// 设置备用模型
     pub fn with_fallback_model(mut self, model: impl Into<String>) -> Self {
         self.fallback_model = Some(model.into());
+        self
+    }
+
+    /// 是否启用「主模型不可用 → 探测备用模型 → 切换」流程
+    pub fn with_fallback_switch_enabled(mut self, enabled: bool) -> Self {
+        self.fallback_switch_enabled = enabled;
         self
     }
 

@@ -66,11 +66,6 @@ impl GraphLayer {
             .push(edge);
     }
 
-    /// 获取节点
-    fn get_node(&self, id: &str) -> Option<&MemoryNode> {
-        self.nodes.get(id)
-    }
-
     /// 获取节点的所有出边邻居
     fn get_outgoing_neighbors(&self, id: &str) -> Vec<&MemoryNode> {
         self.outgoing
@@ -155,11 +150,6 @@ impl GraphLayer {
 
         // 移除节点
         self.nodes.remove(id)
-    }
-
-    /// 获取图谱中的所有节点 ID
-    fn node_ids(&self) -> Vec<String> {
-        self.nodes.keys().cloned().collect()
     }
 
     /// 获取图谱中的所有边
@@ -314,7 +304,7 @@ impl InMemoryGraphDB {
             initial_path.nodes.push(start_id.to_string());
             queue.push_back((start_id.to_string(), initial_path, 1.0));
 
-            while let Some((current_id, mut current_path, path_score)) = queue.pop_front() {
+            while let Some((current_id, current_path, path_score)) = queue.pop_front() {
                 let current_hop = current_path.hop_count();
 
                 // 如果已达到最大跳数，不再扩展
@@ -388,7 +378,7 @@ impl InMemoryGraphDB {
             initial_path.nodes.push(start_id.to_string());
             queue.push_back((start_id.to_string(), initial_path, 1.0));
 
-            while let Some((current_id, mut current_path, path_score)) = queue.pop_front() {
+            while let Some((current_id, current_path, path_score)) = queue.pop_front() {
                 let current_hop = current_path.hop_count();
 
                 if current_hop >= max_hops {
