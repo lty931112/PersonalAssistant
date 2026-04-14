@@ -402,7 +402,7 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
         llm_client,
         memory,
         tool_registry,
-        settings,
+        &settings,
         Some(approval_dyn),
     )?;
 
@@ -551,7 +551,7 @@ async fn run_query(settings: Settings, cli: &Config, prompt: &str) -> Result<()>
         llm_client,
         memory,
         tool_registry,
-        settings,
+        &settings,
         Some(cli_approval),
     )?;
 

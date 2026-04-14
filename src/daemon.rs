@@ -42,6 +42,22 @@ impl Default for DaemonConfig {
 /// 7. 重定向 stdin/stdout/stderr
 /// 8. 写入 PID 文件
 pub fn daemonize(config: &DaemonConfig) -> Result<(), String> {
+    #[cfg(not(unix))]
+    {
+        let _ = config;
+        return Err("守护进程模式仅在 Unix 类系统上支持".to_string());
+    }
+
+    #[cfg(unix)]
+    {
+        daemonize_unix(config)
+    }
+}
+
+#[cfg(unix)]
+fn daemonize_unix(config: &DaemonConfig) -> Result<(), String> {
+    use std::os::unix::io::{AsRawFd, IntoRawFd};
+
     // 确保日志目录存在
     if let Some(parent) = std::path::Path::new(&config.pid_file).parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建 PID 文件目录失败: {}", e))?;
