@@ -462,7 +462,7 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
     info!("正在启动 Gateway 服务器...");
 
     // 创建 shutdown 信号
-    let mut shutdown_rx = create_shutdown_signal();
+    let shutdown_rx = create_shutdown_signal();
 
     // 在后台启动 Gateway，同时监听多种终止信号
     tokio::select! {
