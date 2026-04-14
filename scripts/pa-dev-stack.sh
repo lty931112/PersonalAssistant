@@ -11,6 +11,7 @@
 #   NEXT_PUBLIC_WS_URL         例: ws://127.0.0.1:19870/ws
 #   PA_WEB_PORT                例: 3333（前端 dev server 端口）
 #   PA_WEB_PORT_MAX_PROBE      例: 20（最多向后探测 20 个端口）
+#   PA_WEB_BIND_HOST           例: 0.0.0.0（前端服务监听地址）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +29,7 @@ export NEXT_PUBLIC_API_BASE_URL="${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:19
 export NEXT_PUBLIC_WS_URL="${NEXT_PUBLIC_WS_URL:-ws://127.0.0.1:19870/ws}"
 WEB_PORT="${PA_WEB_PORT:-3333}"
 WEB_PORT_MAX_PROBE="${PA_WEB_PORT_MAX_PROBE:-20}"
+WEB_BIND_HOST="${PA_WEB_BIND_HOST:-0.0.0.0}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
@@ -106,7 +108,17 @@ prepare_web_url() {
     echo "提示: 前端端口 ${WEB_PORT} 被占用，已自动切换到 ${SELECTED_WEB_PORT}。"
   fi
   WEB_PORT="$SELECTED_WEB_PORT"
-  WEB_URL="http://127.0.0.1:${WEB_PORT}"
+  WEB_URL_LOCAL="http://127.0.0.1:${WEB_PORT}"
+  WEB_URL="$WEB_URL_LOCAL"
+
+  # WSL 场景下优先提供 Windows 侧更稳定可访问的 WSL IP 地址。
+  if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+    local wsl_ip
+    wsl_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [[ -n "${wsl_ip}" ]]; then
+      WEB_URL="http://${wsl_ip}:${WEB_PORT}"
+    fi
+  fi
   echo "$WEB_URL" > "$WEB_URL_FILE"
 }
 
@@ -181,7 +193,7 @@ start_web_background() {
     echo "正在安装前端依赖 (npm ci)…" >&2
     npm ci
   fi
-  npm run dev -- -p "$WEB_PORT" >>"$LOG_DIR/web-dev.log" 2>&1 &
+  npm run dev -- -H "$WEB_BIND_HOST" -p "$WEB_PORT" >>"$LOG_DIR/web-dev.log" 2>&1 &
   echo "$!" > "$WEB_PID_FILE"
 }
 
@@ -196,7 +208,7 @@ run_web() {
     echo "正在安装前端依赖 (npm ci)…" >&2
     npm ci
   fi
-  npm run dev -- -p "$WEB_PORT" >>"$LOG_DIR/web-dev.log" 2>&1
+  npm run dev -- -H "$WEB_BIND_HOST" -p "$WEB_PORT" >>"$LOG_DIR/web-dev.log" 2>&1
 }
 
 start_stack() {
@@ -212,14 +224,15 @@ start_stack() {
   start_gateway_background
   start_web_background
 
-  if wait_for_web_ready "$WEB_URL" 20; then
+  if wait_for_web_ready "$WEB_URL_LOCAL" 20; then
     echo "前端已就绪: ${WEB_URL}"
   else
-    echo "前端启动中（尚未确认就绪）: ${WEB_URL}"
+    echo "前端启动中（尚未确认就绪）: ${WEB_URL}（本机探活: ${WEB_URL_LOCAL}）"
   fi
   echo "已在后台启动 Gateway 与前端开发服务。"
   echo "  日志: $LOG_DIR/gateway.log 与 $LOG_DIR/web-dev.log"
   echo "  前端地址: ${WEB_URL}"
+  echo "  本机探活地址: ${WEB_URL_LOCAL}"
   echo "  最终地址文件: $WEB_URL_FILE"
   echo "  停止命令: $0 stop"
 }
