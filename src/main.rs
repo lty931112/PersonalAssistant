@@ -16,7 +16,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, EnvFilter};
 
 use cli::{Command, Config};
 use pa_config::{PersonaRuntime, Settings};
@@ -49,8 +49,9 @@ async fn main() -> Result<()> {
     // 1. 解析 CLI 参数
     let cli = cli::parse_args();
 
-    // 2. 初始化日志
-    init_tracing(cli.verbose);
+    // 2. 初始化日志（含实时广播，供 GET /api/logs/stream）
+    let log_broadcast = pa_gateway::LogBroadcast::new(4096);
+    init_tracing(cli.verbose, log_broadcast.clone());
 
     // 3. 加载配置
     let settings = Settings::load_or_default()
@@ -58,7 +59,7 @@ async fn main() -> Result<()> {
 
     // 4. 匹配命令
     match cli.command {
-        Command::Start => start_server(settings, &cli).await?,
+        Command::Start => start_server(settings, &cli, log_broadcast.clone()).await?,
         Command::Query { ref prompt } => run_query(settings, &cli, prompt).await?,
         Command::Version => print_version(),
     }
@@ -74,21 +75,29 @@ async fn main() -> Result<()> {
 ///
 /// - `verbose` 模式使用 DEBUG 级别
 /// - 否则使用 INFO 级别
-fn init_tracing(verbose: bool) {
+fn init_tracing(verbose: bool, log_broadcast: pa_gateway::LogBroadcast) {
     let default_level = if verbose { "debug" } else { "info" };
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(default_level));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_file(verbose)
-        .with_line_number(verbose)
+    let writer = log_broadcast.make_writer();
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_file(verbose)
+                .with_line_number(verbose)
+                .with_writer(writer),
+        )
         .init();
 
-    info!("日志系统已初始化 (verbose={})", verbose);
+    info!(
+        "日志系统已初始化 (verbose={})，实时日志: GET /api/logs/stream",
+        verbose
+    );
 }
 
 // ============================================================
@@ -346,15 +355,18 @@ fn create_shutdown_signal() -> tokio::sync::watch::Receiver<bool> {
 /// 11. 可选：启动飞书通道
 /// 12. 启动 Gateway 服务器
 /// 13. 处理 Ctrl+C 优雅关闭
-async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
+async fn start_server(
+    settings: Settings,
+    cli: &Config,
+    log_broadcast: pa_gateway::LogBroadcast,
+) -> Result<()> {
     // 0. 守护进程化（如果启用）
     if cli.daemon {
         info!("以守护进程模式启动...");
         let daemon_config = daemon::DaemonConfig::default();
         daemon::daemonize(&daemon_config)
             .map_err(|e| anyhow::anyhow!("守护进程化失败: {}", e))?;
-        // 守护进程化后重新初始化日志（文件描述符已重定向）
-        init_tracing(cli.verbose);
+        // 日志已在主进程 init_tracing；守护进程化后 stderr 可能已重定向，无需再次 init（避免重复注册 subscriber）
         info!("守护进程已启动");
     }
 
@@ -432,7 +444,11 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
     // 所以我们使用 Gateway::new，它会自己创建内存数据库
     // 但为了使用持久化数据库，我们使用 with_task_store
     let task_store_for_gateway = init_task_store(&cli.db_path).await?;
-    let mut gateway = Gateway::with_task_store(settings.clone(), task_store_for_gateway)
+    let mut gateway = Gateway::with_task_store(
+        settings.clone(),
+        task_store_for_gateway,
+        log_broadcast.clone(),
+    )
         .await
         .map_err(|e| anyhow::anyhow!("创建 Gateway 失败: {}", e))?;
     gateway = gateway.with_approval_broker(approval_broker);

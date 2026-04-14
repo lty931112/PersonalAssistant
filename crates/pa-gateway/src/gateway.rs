@@ -10,6 +10,7 @@ use pa_task::{TaskManager, TaskStore};
 use pa_agent::Agent;
 use pa_query::SharedApprovalBroker;
 use crate::server::GatewayServer;
+use crate::log_broadcast::LogBroadcast;
 use crate::client::ClientRegistry;
 use crate::events::EventBus;
 use crate::alert::AlertManager;
@@ -32,13 +33,15 @@ pub struct Gateway {
     watchdog_config: Option<WatchdogConfig>,
     /// 工具调用人工批准（与 Agent 内 QueryEngine 共用）
     approval_broker: Option<Arc<SharedApprovalBroker>>,
+    /// tracing 实时广播（与入口 `init_tracing` 共用同一实例）
+    log_broadcast: LogBroadcast,
 }
 
 impl Gateway {
     /// 创建新的 Gateway
     ///
     /// 初始化 TaskManager、ClientRegistry、EventBus 等核心组件。
-    pub async fn new(settings: Settings) -> Result<Self, CoreError> {
+    pub async fn new(settings: Settings, log_broadcast: LogBroadcast) -> Result<Self, CoreError> {
         // 初始化任务存储（使用内存数据库 ":memory:" 用于开发）
         let task_store = TaskStore::new(":memory:").await?;
         task_store.init().await?;
@@ -59,6 +62,7 @@ impl Gateway {
             alert_manager: None,
             watchdog_config: None,
             approval_broker: None,
+            log_broadcast,
         })
     }
 
@@ -66,6 +70,7 @@ impl Gateway {
     pub async fn with_task_store(
         settings: Settings,
         task_store: TaskStore,
+        log_broadcast: LogBroadcast,
     ) -> Result<Self, CoreError> {
         // 初始化任务存储
         task_store.init().await?;
@@ -85,6 +90,7 @@ impl Gateway {
             alert_manager: None,
             watchdog_config: None,
             approval_broker: None,
+            log_broadcast,
         })
     }
 
@@ -128,6 +134,7 @@ impl Gateway {
             self.agents_map.clone(),
             self.approval_broker.clone(),
             persona,
+            self.log_broadcast.clone(),
         );
 
         self.server = Some(server);

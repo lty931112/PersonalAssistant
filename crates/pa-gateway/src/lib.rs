@@ -4,6 +4,7 @@
 //! 参考 OpenClaw 的 Gateway 架构设计。
 
 pub mod gateway;
+pub mod log_broadcast;
 pub mod server;
 pub mod protocol;
 pub mod client;
@@ -14,6 +15,7 @@ pub mod metrics;
 pub mod alert;
 
 pub use gateway::Gateway;
+pub use log_broadcast::LogBroadcast;
 pub use server::{GatewayServer, AppState};
 pub use protocol::{Message as ProtocolMessage, MethodCall, MethodResponse};
 pub use client::ClientConnection;

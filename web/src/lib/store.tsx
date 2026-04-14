@@ -292,6 +292,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const wsClientRef = useRef<WebSocketClient | null>(null);
   const currentAssistantMsgIdRef = useRef<string | null>(null);
+  /** WebSocket 回调在 mount 时固定，须用 ref 读取「当前」会话，否则会一直停在「思考中」 */
+  const activeConversationIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
+  activeConversationIdRef.current = state.activeConversationId;
+  conversationsRef.current = state.conversations;
 
   // 初始化：加载设置
   useEffect(() => {
@@ -350,37 +355,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.theme]);
 
-  // 初始化 WebSocket
-  useEffect(() => {
-    const client = new WebSocketClient({
-      onMessage: handleWSMessage as WSMessageHandler,
-      onStateChange: (wsState) => {
-        dispatch({ type: 'SET_WS_STATE', payload: wsState });
-      },
-      autoReconnect: true,
-      reconnectInterval: 3000,
-    });
+  /** 刷新任务列表 */
+  const refreshTasks = useCallback(async () => {
+    try {
+      const { tasks } = await getTasks();
+      dispatch({ type: 'SET_TASKS', payload: tasks });
+    } catch {
+      // 静默失败，不中断 UI
+    }
+  }, []);
 
-    wsClientRef.current = client;
-    client.connect();
+  /** 刷新 Agent 列表 */
+  const refreshAgents = useCallback(async () => {
+    try {
+      const { agents } = await getAgents();
+      dispatch({ type: 'SET_AGENTS', payload: agents });
+    } catch {
+      // 静默失败
+    }
+  }, []);
 
-    // 定期刷新任务和 Agent 列表
-    const refreshInterval = setInterval(() => {
-      refreshTasks();
-      refreshAgents();
-      refreshHealth();
-    }, 10000);
-
-    // 初始加载
-    refreshTasks();
-    refreshAgents();
-    refreshHealth();
-
-    return () => {
-      client.disconnect();
-      clearInterval(refreshInterval);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  /** 刷新健康检查 */
+  const refreshHealth = useCallback(async () => {
+    try {
+      const { getHealthDetail } = await import('./api');
+      const detail = await getHealthDetail();
+      dispatch({ type: 'SET_HEALTH_DETAIL', payload: detail });
+    } catch {
+      // 静默失败
+    }
   }, []);
 
   // WebSocket 地址或 Gateway 令牌变更时按 localStorage 立即重连
@@ -408,9 +411,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'Stream': {
           // 流式文本追加到当前助手消息
           if (event.delta && currentAssistantMsgIdRef.current) {
-            const convId = getActiveConvId();
+            const convId = activeConversationIdRef.current;
             if (convId) {
-              const conv = state.conversations.find((c) => c.id === convId);
+              const conv = conversationsRef.current.find((c) => c.id === convId);
               const msg = conv?.messages.find((m) => m.id === currentAssistantMsgIdRef.current);
               if (msg) {
                 dispatch({
@@ -461,7 +464,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'TurnComplete': {
           // 回合完成，标记消息流式结束
           if (currentAssistantMsgIdRef.current) {
-            const convId = getActiveConvId();
+            const convId = activeConversationIdRef.current;
             if (convId) {
               dispatch({
                 type: 'SET_MESSAGE_STREAMING',
@@ -484,7 +487,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'Error': {
           dispatch({ type: 'SET_ERROR', payload: event.message || '发生错误' });
           if (currentAssistantMsgIdRef.current) {
-            const convId = getActiveConvId();
+            const convId = activeConversationIdRef.current;
             if (convId) {
               dispatch({
                 type: 'SET_MESSAGE_STREAMING',
@@ -515,7 +518,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!msgId) {
         return;
       }
-      const convId = getActiveConvId();
+      const convId = activeConversationIdRef.current;
       if (!convId) {
         currentAssistantMsgIdRef.current = null;
         return;
@@ -549,6 +552,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } else if (r.status === 'cancelled') {
           text = '已取消';
         }
+      } else if (typeof inner === 'string') {
+        text = inner;
       }
       if (text === null) {
         text = '';
@@ -567,14 +572,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       void refreshTasks();
       void refreshAgents();
     }
-    // refreshTasks / refreshAgents 在下方定义，且 body 仅在 WS 回调时运行，故不写入 deps 以免 TDZ
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.conversations, state.activeConversationId]);
+  }, []);
 
-  /** 获取当前活跃对话 ID */
-  const getActiveConvId = useCallback(() => {
-    return state.activeConversationId;
-  }, [state.activeConversationId]);
+  // 初始化 WebSocket（须在 handleWSMessage、refreshTasks 定义之后）
+  useEffect(() => {
+    const client = new WebSocketClient({
+      onMessage: handleWSMessage as WSMessageHandler,
+      onStateChange: (wsState) => {
+        dispatch({ type: 'SET_WS_STATE', payload: wsState });
+      },
+      autoReconnect: true,
+      reconnectInterval: 3000,
+    });
+
+    wsClientRef.current = client;
+    client.connect();
+
+    const refreshInterval = setInterval(() => {
+      void refreshTasks();
+      void refreshAgents();
+      void refreshHealth();
+    }, 10000);
+
+    void refreshTasks();
+    void refreshAgents();
+    void refreshHealth();
+
+    return () => {
+      client.disconnect();
+      clearInterval(refreshInterval);
+    };
+  }, [handleWSMessage, refreshTasks, refreshAgents, refreshHealth]);
 
   /** 发送聊天消息 */
   const sendMessage = useCallback((prompt: string, options?: SendMessageOptions) => {
@@ -664,37 +692,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       method: 'cancel',
       params: { task_id: taskId },
     });
-  }, []);
-
-  /** 刷新任务列表 */
-  const refreshTasks = useCallback(async () => {
-    try {
-      const { tasks } = await getTasks();
-      dispatch({ type: 'SET_TASKS', payload: tasks });
-    } catch {
-      // 静默失败，不中断 UI
-    }
-  }, []);
-
-  /** 刷新 Agent 列表 */
-  const refreshAgents = useCallback(async () => {
-    try {
-      const { agents } = await getAgents();
-      dispatch({ type: 'SET_AGENTS', payload: agents });
-    } catch {
-      // 静默失败
-    }
-  }, []);
-
-  /** 刷新健康检查 */
-  const refreshHealth = useCallback(async () => {
-    try {
-      const { getHealthDetail } = await import('./api');
-      const detail = await getHealthDetail();
-      dispatch({ type: 'SET_HEALTH_DETAIL', payload: detail });
-    } catch {
-      // 静默失败
-    }
   }, []);
 
   /** 刷新待人工批准的工具调用 */

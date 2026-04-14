@@ -61,6 +61,19 @@ function authHeaders(): Record<string, string> {
 }
 
 /**
+ * 网关实时日志 SSE（与 stderr tracing 同源；`EventSource` 无法自定义 Header，故使用 `token` 查询参数）
+ */
+export function getLogsStreamUrl(): string {
+  const root = getGatewayRootUrl();
+  const t = getGatewayToken();
+  const path = `${root}/api/logs/stream`;
+  if (t) {
+    return `${path}?token=${encodeURIComponent(t)}`;
+  }
+  return path;
+}
+
+/**
  * 通用请求方法
  */
 async function request<T>(path: string, options?: RequestInit): Promise<T> {

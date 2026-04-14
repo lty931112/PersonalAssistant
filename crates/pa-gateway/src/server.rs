@@ -17,7 +17,10 @@ use axum::{
 };
 use crate::auth::{extract_gateway_credential, gateway_auth_enabled, verify_gateway_credential};
 use tower_http::cors::CorsLayer;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt as FuturesStreamExt, stream::Stream};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use tokio_stream::{StreamExt as TokioStreamExt, wrappers::BroadcastStream};
+use std::convert::Infallible;
 use serde::Deserialize;
 use serde_json::json;
 use pa_core::CoreError;
@@ -29,6 +32,7 @@ use crate::client::ClientRegistry;
 use crate::events::EventBus;
 use crate::protocol::{MethodCall, MethodResponse};
 use crate::metrics::MetricsCollector;
+use crate::log_broadcast::LogBroadcast;
 
 /// 应用共享状态
 #[derive(Clone)]
@@ -49,6 +53,8 @@ pub struct AppState {
     pub approval_broker: Option<Arc<SharedApprovalBroker>>,
     /// 「伏羲」人格与任务/流程代号
     pub persona: Arc<PersonaRuntime>,
+    /// 实时日志广播（tracing 副本，SSE：`/api/logs/stream`）
+    pub log_broadcast: LogBroadcast,
 }
 
 /// Gateway 服务器
@@ -67,6 +73,7 @@ impl GatewayServer {
         agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
         approval_broker: Option<Arc<SharedApprovalBroker>>,
         persona: Arc<PersonaRuntime>,
+        log_broadcast: LogBroadcast,
     ) -> Self {
         Self {
             addr: addr.into().parse().expect("Invalid address"),
@@ -79,6 +86,7 @@ impl GatewayServer {
                 metrics: Arc::new(MetricsCollector::new()),
                 approval_broker,
                 persona,
+                log_broadcast,
             },
         }
     }
@@ -102,6 +110,7 @@ impl GatewayServer {
             // Agent 管理 API
             .route("/api/agents", get(list_agents_handler))
             .route("/api/agents/:id/status", get(get_agent_status_handler))
+            .route("/api/logs/stream", get(logs_stream_handler))
             .route("/api/audit/trace/:trace_id", get(get_audit_trace_handler))
             .route("/api/approvals/pending", get(list_pending_approvals_handler))
             .route(
@@ -244,6 +253,20 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
 /// Prometheus 指标端点
 async fn metrics_handler(State(state): State<AppState>) -> String {
     state.metrics.render_prometheus().await
+}
+
+/// Server-Sent Events：实时推送与 stderr 相同的 tracing 行（浏览器可用 `EventSource`，鉴权同 `token=` 查询参数）。
+async fn logs_stream_handler(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.log_broadcast.subscribe();
+    let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), |item| async move {
+        match item {
+            Ok(line) => Some(Ok(Event::default().data(line))),
+            Err(_) => None,
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// 列出所有任务
@@ -438,7 +461,7 @@ async fn handle_socket(
     // 处理消息
     let (mut sender, mut receiver) = socket.split();
 
-    while let Some(msg) = receiver.next().await {
+    while let Some(msg) = FuturesStreamExt::next(&mut receiver).await {
         match msg {
             Ok(WsMessage::Text(text)) => {
                 tracing::debug!("收到消息: {}", text);
