@@ -123,6 +123,17 @@ export interface Conversation {
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+  /** 本会话人格 / 行为设定（追加到网关系统提示，OpenClaw 式） */
+  sessionPersona?: string;
+  /** 是否在回复中鼓励使用 emoji（默认 true） */
+  useEmoji?: boolean;
+}
+
+/** 发送聊天消息时的可选覆盖（由 ChatPanel 传入会话设定） */
+export interface SendMessageOptions {
+  agentId?: string;
+  sessionPersona?: string;
+  useEmoji?: boolean;
 }
 
 /** 待人工批准的工具调用（与后端 ToolApprovalRequest 对齐） */

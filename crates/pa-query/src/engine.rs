@@ -41,9 +41,18 @@ use crate::permission::{PermissionChecker, PermissionDecision};
 #[derive(Debug)]
 pub enum QueryOutcome {
     /// 正常结束
-    EndTurn { message: Message, usage: UsageInfo },
+    EndTurn {
+        message: Message,
+        usage: UsageInfo,
+        /// 结束时的 reask 轮次（与 `TurnComplete` 一致）
+        turn: u32,
+    },
     /// 达到最大 token 数
-    MaxTokens { partial_message: Message, usage: UsageInfo },
+    MaxTokens {
+        partial_message: Message,
+        usage: UsageInfo,
+        turn: u32,
+    },
     /// 被取消
     Cancelled,
     /// 出错
@@ -247,24 +256,45 @@ impl QueryEngine {
 
     /// 简化版执行
     pub async fn execute(&mut self, prompt: String, config: QueryConfig) -> Result<String, CoreError> {
+        let (text, _, _) = self.execute_with_usage(prompt, config).await?;
+        Ok(text)
+    }
+
+    /// 与 [`Self::execute`] 相同，额外返回（结束轮次、累计用量），供任务进度上报等场景。
+    pub async fn execute_with_usage(
+        &mut self,
+        prompt: String,
+        config: QueryConfig,
+    ) -> Result<(String, u32, UsageInfo), CoreError> {
         let (tx, mut rx) = mpsc::channel(256);
-        // 丢弃事件但保持 channel 畅通，避免大量 Observability 事件阻塞 send
         tokio::spawn(async move {
             while rx.recv().await.is_some() {}
         });
-        let outcome = self.execute_with_events(prompt, config, tx).await;
+        let outcome = self.execute_with_events(prompt, config, tx).await?;
 
         match outcome {
-            Ok(QueryOutcome::EndTurn { message, .. }) => Ok(message.text_content()),
-            Ok(QueryOutcome::MaxTokens { partial_message, .. }) => {
-                Ok(format!("[达到最大 token]\n{}", partial_message.text_content()))
-            }
-            Ok(QueryOutcome::Cancelled) => Ok("[已取消]".to_string()),
-            Ok(QueryOutcome::Error(e)) => Err(e),
-            Ok(QueryOutcome::BudgetExceeded { cost_usd, limit_usd }) => {
+            QueryOutcome::EndTurn {
+                message,
+                usage,
+                turn,
+            } => Ok((message.text_content(), turn, usage)),
+            QueryOutcome::MaxTokens {
+                partial_message,
+                usage,
+                turn,
+            } => Ok((
+                format!(
+                    "[达到最大 token]\n{}",
+                    partial_message.text_content()
+                ),
+                turn,
+                usage,
+            )),
+            QueryOutcome::Cancelled => Ok(("[已取消]".to_string(), 0, UsageInfo::default())),
+            QueryOutcome::Error(e) => Err(e),
+            QueryOutcome::BudgetExceeded { cost_usd, limit_usd } => {
                 Err(CoreError::BudgetExceeded { cost_usd, limit_usd })
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -455,6 +485,7 @@ impl QueryEngine {
                     return Ok(QueryOutcome::EndTurn {
                         message: assistant_message,
                         usage: self.total_usage.clone(),
+                        turn,
                     });
                 }
                 StopReason::MaxTokens => {
@@ -463,6 +494,7 @@ impl QueryEngine {
                     return Ok(QueryOutcome::MaxTokens {
                         partial_message: assistant_message,
                         usage: self.total_usage.clone(),
+                        turn,
                     });
                 }
                 StopReason::ToolUse => {
@@ -515,6 +547,7 @@ impl QueryEngine {
                     return Ok(QueryOutcome::EndTurn {
                         message: assistant_message,
                         usage: self.total_usage.clone(),
+                        turn,
                     });
                 }
             }

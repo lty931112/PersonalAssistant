@@ -32,6 +32,9 @@ pub struct Settings {
     /// 可观测性与执行审计
     #[serde(default)]
     pub observability: ObservabilitySettings,
+    /// 「伏羲」人格：全局/按智能体 Markdown、山海经与行星代号
+    #[serde(default)]
+    pub persona: PersonaSettings,
 }
 
 impl Default for Settings {
@@ -48,6 +51,36 @@ impl Default for Settings {
             alert: AlertSettings::default(),
             security: SecuritySettings::default(),
             observability: ObservabilitySettings::default(),
+            persona: PersonaSettings::default(),
+        }
+    }
+}
+
+/// 「伏羲」人格与命名（Markdown 路径相对工作区根目录）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonaSettings {
+    /// 系统品牌名（客户端与提示词抬头）
+    pub system_name: String,
+    /// 为 false 时不读取 Markdown，仍使用山海经/行星代号
+    #[serde(default = "default_true")]
+    pub use_markdown_persona: bool,
+    /// 全局人格 Markdown 路径
+    pub global_markdown_path: String,
+    /// 按智能体 Markdown 目录（其下 `<agent_id>.md`）
+    pub agents_markdown_dir: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PersonaSettings {
+    fn default() -> Self {
+        Self {
+            system_name: "伏羲".into(),
+            use_markdown_persona: true,
+            global_markdown_path: "config/persona/global.md".into(),
+            agents_markdown_dir: "config/persona/agents".into(),
         }
     }
 }

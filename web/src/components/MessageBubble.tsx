@@ -77,13 +77,15 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
                 >
                   {message.content}
                 </ReactMarkdown>
-              ) : (
+              ) : message.isStreaming ? (
                 <div className="flex items-center gap-2 text-muted-foreground text-sm">
                   <span className="tool-loading-dot" />
                   <span className="tool-loading-dot" />
                   <span className="tool-loading-dot" />
                   <span className="ml-1">思考中...</span>
                 </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">（无回复）</p>
               )}
             </div>
           )}

@@ -13,9 +13,11 @@ import type {
   AgentStatusInfo,
   ToolCall,
   WSIncoming,
+  WSResponse,
   HealthDetail,
   AlertRecord,
   ToolApprovalRequest,
+  SendMessageOptions,
 } from './types';
 import { WebSocketClient, type WSMessageHandler, type WSConnectionState } from './websocket';
 import { getTasks, getAgents, getPendingApprovals, respondApproval } from './api';
@@ -64,6 +66,13 @@ type Action =
   | { type: 'SET_SETTINGS'; payload: AppSettings }
   | { type: 'SET_WS_STATE'; payload: WSConnectionState }
   | { type: 'ADD_CONVERSATION'; payload: Conversation }
+  | {
+      type: 'UPDATE_CONVERSATION';
+      payload: {
+        id: string;
+        patch: Partial<Pick<Conversation, 'title' | 'sessionPersona' | 'useEmoji'>>;
+      };
+    }
   | { type: 'SET_ACTIVE_CONVERSATION'; payload: string | null }
   | { type: 'ADD_MESSAGE'; payload: { conversationId: string; message: ChatMessage } }
   | { type: 'UPDATE_MESSAGE'; payload: { conversationId: string; messageId: string; content: string } }
@@ -131,6 +140,17 @@ function appReducer(state: AppState, action: Action): AppState {
         conversations: [action.payload, ...state.conversations],
         activeConversationId: action.payload.id,
       };
+
+    case 'UPDATE_CONVERSATION': {
+      const { id, patch } = action.payload;
+      const now = new Date().toISOString();
+      return {
+        ...state,
+        conversations: state.conversations.map((c) =>
+          c.id === id ? { ...c, ...patch, updatedAt: now } : c
+        ),
+      };
+    }
 
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversationId: action.payload };
@@ -253,7 +273,7 @@ interface AppContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
   wsClient: WebSocketClient | null;
-  sendMessage: (prompt: string, agentId?: string) => void;
+  sendMessage: (prompt: string, options?: SendMessageOptions) => void;
   cancelTask: (taskId: string) => void;
   refreshTasks: () => Promise<void>;
   refreshAgents: () => Promise<void>;
@@ -484,9 +504,72 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         default:
           break;
       }
+      return;
     }
+
+    // Gateway 对 chat 的 query 仅在完成时回一条 MethodResponse（body 内带 result 文本），
+    // 不会推送 Event/TurnComplete；必须在此结束「思考中」并写入回复。
+    if ('id' in message && !('kind' in message)) {
+      const resp = message as WSResponse;
+      const msgId = currentAssistantMsgIdRef.current;
+      if (!msgId) {
+        return;
+      }
+      const convId = getActiveConvId();
+      if (!convId) {
+        currentAssistantMsgIdRef.current = null;
+        return;
+      }
+
+      if (resp.error) {
+        dispatch({
+          type: 'UPDATE_MESSAGE',
+          payload: {
+            conversationId: convId,
+            messageId: msgId,
+            content: `错误: ${resp.error}`,
+          },
+        });
+        dispatch({
+          type: 'SET_MESSAGE_STREAMING',
+          payload: { conversationId: convId, messageId: msgId, isStreaming: false },
+        });
+        currentAssistantMsgIdRef.current = null;
+        dispatch({ type: 'CLEAR_TOOL_CALLS' });
+        void refreshTasks();
+        return;
+      }
+
+      const inner = resp.result;
+      let text: string | null = null;
+      if (inner && typeof inner === 'object') {
+        const r = inner as Record<string, unknown>;
+        if (typeof r.result === 'string') {
+          text = r.result;
+        } else if (r.status === 'cancelled') {
+          text = '已取消';
+        }
+      }
+      if (text === null) {
+        text = '';
+      }
+
+      dispatch({
+        type: 'UPDATE_MESSAGE',
+        payload: { conversationId: convId, messageId: msgId, content: text },
+      });
+      dispatch({
+        type: 'SET_MESSAGE_STREAMING',
+        payload: { conversationId: convId, messageId: msgId, isStreaming: false },
+      });
+      currentAssistantMsgIdRef.current = null;
+      dispatch({ type: 'CLEAR_TOOL_CALLS' });
+      void refreshTasks();
+      void refreshAgents();
+    }
+    // refreshTasks / refreshAgents 在下方定义，且 body 仅在 WS 回调时运行，故不写入 deps 以免 TDZ
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.conversations]);
+  }, [state.conversations, state.activeConversationId]);
 
   /** 获取当前活跃对话 ID */
   const getActiveConvId = useCallback(() => {
@@ -494,26 +577,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state.activeConversationId]);
 
   /** 发送聊天消息 */
-  const sendMessage = useCallback((prompt: string, agentId: string = 'default') => {
+  const sendMessage = useCallback((prompt: string, options?: SendMessageOptions) => {
     const client = wsClientRef.current;
     if (!client || client.state !== 'connected') {
       dispatch({ type: 'SET_ERROR', payload: 'WebSocket 未连接，无法发送消息' });
       return;
     }
 
-    // 确保有活跃对话
+    const agentId = options?.agentId ?? 'default';
     let convId = state.activeConversationId;
+    const existing = convId ? state.conversations.find((c) => c.id === convId) : undefined;
+    const sessionPersona =
+      options?.sessionPersona ?? existing?.sessionPersona ?? '';
+    const useEmoji = (options?.useEmoji ?? existing?.useEmoji) !== false;
+
+    // 确保有活跃对话
     if (!convId) {
-      // 创建新对话
       const newConv: Conversation = {
         id: generateId(),
         title: prompt.slice(0, 50) + (prompt.length > 50 ? '...' : ''),
         messages: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        sessionPersona,
+        useEmoji,
       };
       dispatch({ type: 'ADD_CONVERSATION', payload: newConv });
       convId = newConv.id;
+    } else {
+      if (
+        existing &&
+        (existing.sessionPersona !== sessionPersona || existing.useEmoji !== useEmoji)
+      ) {
+        dispatch({
+          type: 'UPDATE_CONVERSATION',
+          payload: {
+            id: convId,
+            patch: { sessionPersona, useEmoji },
+          },
+        });
+      }
     }
 
     // 添加用户消息
@@ -539,13 +642,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // 记录当前助手消息 ID
     currentAssistantMsgIdRef.current = assistantMsgId;
 
-    // 通过 WebSocket 发送查询
+    // 通过 WebSocket 发送查询（会话人格 / emoji 由网关合并进系统提示）
     client.send({
       id: generateId(),
       method: 'query',
-      params: { prompt, agent_id: agentId },
+      params: {
+        prompt,
+        agent_id: agentId,
+        session_system_prompt: sessionPersona,
+        use_emoji: useEmoji,
+      },
     });
-  }, [state.activeConversationId]);
+  }, [state.activeConversationId, state.conversations]);
 
   /** 取消任务 */
   const cancelTask = useCallback((taskId: string) => {

@@ -109,9 +109,25 @@ impl Agent {
         &self.config.id
     }
 
+    /// 展示用名称（可与山海经代号一致）
+    pub fn display_name(&self) -> &str {
+        self.config.name.as_str()
+    }
+
     /// 获取当前状态
     pub async fn state(&self) -> AgentState {
         self.state.read().await.clone()
+    }
+
+    /// 基于 Agent 全局配置构造 [`QueryConfig`]（`max_tokens` 等其余字段走默认值）。
+    /// Gateway 可在其上叠加「本会话人格」等临时覆盖。
+    pub fn build_query_config(&self) -> pa_query::QueryConfig {
+        let mut q = pa_query::QueryConfig::default();
+        q.model = self.config.model.clone();
+        q.max_turns = self.config.max_turns;
+        q.system_prompt = self.config.system_prompt.clone();
+        q.memory_enabled = self.config.memory_enabled;
+        q
     }
 
     /// 执行查询（原始方法，保持向后兼容）
@@ -120,14 +136,7 @@ impl Agent {
         let task_id = uuid::Uuid::new_v4().to_string();
         *self.state.write().await = AgentState::Running { task_id: task_id.clone() };
 
-        let config = pa_query::QueryConfig {
-            model: self.config.model.clone(),
-            max_tokens: 8192,
-            max_turns: self.config.max_turns,
-            system_prompt: self.config.system_prompt.clone(),
-            memory_enabled: self.config.memory_enabled,
-            ..Default::default()
-        };
+        let config = self.build_query_config();
 
         let result = self.query_engine.execute(prompt, config).await;
 
@@ -144,12 +153,14 @@ impl Agent {
         &mut self,
         prompt: String,
         config: pa_query::QueryConfig,
+        task_metadata: Option<serde_json::Value>,
     ) -> String {
         // 1. 创建任务
         let task_id = self.task_manager.create_task(
             self.config.id.as_str(),
             &prompt,
             TaskPriority::Medium,
+            task_metadata,
         ).await;
 
         tracing::info!("Agent {} 创建任务: {}", self.config.id.as_str(), task_id);
@@ -169,39 +180,35 @@ impl Agent {
             return format!("任务启动失败: {}", e);
         }
 
-        // 5. 执行查询
-        let query_config = pa_query::QueryConfig {
-            model: config.model,
-            max_tokens: config.max_tokens,
-            max_turns: config.max_turns,
-            system_prompt: config.system_prompt,
-            memory_enabled: config.memory_enabled,
-            ..Default::default()
-        };
+        // 5. 执行查询（`config` 已由调用方基于 Agent 默认值并合并会话覆盖）
+        let exec = self
+            .query_engine
+            .execute_with_usage(prompt.clone(), config)
+            .await;
 
-        let result = self.query_engine.execute(prompt.clone(), query_config).await;
-
-        // 6. 每轮更新进度（模拟：在实际实现中，QueryEngine 会通过事件回调来更新）
-        // 这里我们在完成后统一更新
-        let turn_count = 1u32; // 简化处理，实际应从 QueryEngine 获取
-        let input_tokens = 0u32;
-        let output_tokens = 0u32;
-        let cost = 0.0f64;
-
-        let _ = self.task_manager.update_progress(
-            &task_id,
-            turn_count,
-            input_tokens,
-            output_tokens,
-            cost,
-        ).await;
-
-        // 7. 检查取消状态
+        // 6. 检查取消状态（在落库进度前读取）
         let cancelled = self.task_manager.is_cancelled(&task_id).await;
 
+        // 7. 写入真实轮次与 Token（来自 QueryEngine 累计用量）
+        match &exec {
+            Ok((_text, turn, usage)) => {
+                let _ = self
+                    .task_manager
+                    .update_progress(
+                        &task_id,
+                        *turn,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        0.0,
+                    )
+                    .await;
+            }
+            Err(_) => {}
+        }
+
         // 8. 完成后更新任务状态
-        match &result {
-            Ok(output) => {
+        match exec {
+            Ok((output, _, _)) => {
                 if cancelled {
                     let _ = self.task_manager.cancel_task(&task_id).await;
                     tracing::info!("任务已取消: {}", task_id);
@@ -209,13 +216,11 @@ impl Agent {
                     let _ = self.task_manager.complete_task(&task_id).await;
                     tracing::info!("任务已完成: {}", task_id);
 
-                    // 更新统计
                     self.completed_tasks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                // 恢复空闲状态
                 *self.state.write().await = AgentState::Idle;
                 self.cancel_token = None;
-                output.clone()
+                output
             }
             Err(e) => {
                 let _ = self.task_manager.fail_task(&task_id, e.to_string()).await;

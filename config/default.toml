@@ -76,6 +76,13 @@ db_path = ".pa/tasks.db"
 cleanup_days = 30
 max_concurrent_tasks = 10
 
+# 「伏羲」人格：全局/按智能体 Markdown；智能体与流程块用山海经池，任务计划用行星名循环
+[persona]
+system_name = "伏羲"
+use_markdown_persona = true
+global_markdown_path = "config/persona/global.md"
+agents_markdown_dir = "config/persona/agents"
+
 # 安全：收窄 Agent 默认可达范围
 [security]
 # 为 true 时，read_file / search / glob / write_file 的路径必须落在 workspace_roots（或当前工作目录）下

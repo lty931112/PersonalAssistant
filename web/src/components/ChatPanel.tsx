@@ -9,10 +9,27 @@ import type { Conversation } from '@/lib/types';
  * 聊天面板组件
  * 包含对话历史列表、聊天区域和工具调用状态
  */
+const SESSION_PRESETS: { label: string; text: string }[] = [
+  {
+    label: '专业',
+    text: '你专业、冷静、条理清晰，优先给出可执行结论，少说客套话。',
+  },
+  {
+    label: '活泼',
+    text: '你像关系很好的朋友，语气轻松热情，可适当玩梗，仍保持事实准确。',
+  },
+  {
+    label: '助教',
+    text: '你是耐心的学习助教，善用例子与步骤讲解，鼓励用户追问。',
+  },
+];
+
 export default function ChatPanel() {
   const { state, dispatch, sendMessage, cancelTask } = useApp();
   const [inputValue, setInputValue] = useState('');
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [sessionPersonaDraft, setSessionPersonaDraft] = useState('');
+  const [useEmojiDraft, setUseEmojiDraft] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -26,12 +43,27 @@ export default function ChatPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConversation?.messages]);
 
+  /** 切换对话时，同步「本会话设定」草稿 */
+  useEffect(() => {
+    if (activeConversation) {
+      setSessionPersonaDraft(activeConversation.sessionPersona ?? '');
+      setUseEmojiDraft(activeConversation.useEmoji !== false);
+    } else {
+      setSessionPersonaDraft('');
+      setUseEmojiDraft(true);
+    }
+  }, [activeConversation?.id]);
+
   /** 处理发送消息 */
   const handleSend = () => {
     const prompt = inputValue.trim();
     if (!prompt) return;
 
-    sendMessage(prompt);
+    sendMessage(prompt, {
+      agentId: 'default',
+      sessionPersona: sessionPersonaDraft.trim(),
+      useEmoji: useEmojiDraft,
+    });
     setInputValue('');
 
     // 重置输入框高度
@@ -224,8 +256,45 @@ export default function ChatPanel() {
         </div>
       </div>
 
-      {/* 右侧：当前任务状态面板 */}
+      {/* 右侧：会话设定 + 任务状态 */}
       <div className="w-72 border-l border-border bg-card shrink-0 overflow-y-auto">
+        <div className="p-4 border-b border-border space-y-3">
+          <h3 className="text-sm font-semibold text-foreground">本会话设定</h3>
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            参考 OpenClaw：以下为<strong>当前会话</strong>的人格与行为补充，会追加到智能体系统提示；不影响其他会话。
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {SESSION_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                className="px-2 py-0.5 text-[11px] rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                onClick={() => setSessionPersonaDraft(p.text)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={sessionPersonaDraft}
+            onChange={(e) => setSessionPersonaDraft(e.target.value)}
+            placeholder="例如：说话简短、称呼我为老师、回答前先给要点列表…"
+            disabled={state.wsState !== 'connected'}
+            className="input text-xs min-h-[72px] resize-y font-normal"
+            rows={3}
+          />
+          <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="rounded border-border"
+              checked={useEmojiDraft}
+              onChange={(e) => setUseEmojiDraft(e.target.checked)}
+              disabled={state.wsState !== 'connected'}
+            />
+            回复中使用表情符号（emoji）
+          </label>
+        </div>
+
         <div className="p-4 border-b border-border">
           <h3 className="text-sm font-semibold text-foreground">任务状态</h3>
         </div>

@@ -21,7 +21,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use pa_core::CoreError;
-use pa_config::Settings;
+use pa_config::{PersonaRuntime, Settings};
 use pa_task::TaskManager;
 use pa_query::SharedApprovalBroker;
 use pa_agent::Agent;
@@ -47,6 +47,8 @@ pub struct AppState {
     pub metrics: Arc<MetricsCollector>,
     /// 工具人工批准（可选）
     pub approval_broker: Option<Arc<SharedApprovalBroker>>,
+    /// 「伏羲」人格与任务/流程代号
+    pub persona: Arc<PersonaRuntime>,
 }
 
 /// Gateway 服务器
@@ -64,6 +66,7 @@ impl GatewayServer {
         task_manager: Arc<TaskManager>,
         agents_map: Arc<RwLock<HashMap<String, Arc<RwLock<Agent>>>>>,
         approval_broker: Option<Arc<SharedApprovalBroker>>,
+        persona: Arc<PersonaRuntime>,
     ) -> Self {
         Self {
             addr: addr.into().parse().expect("Invalid address"),
@@ -75,6 +78,7 @@ impl GatewayServer {
                 agents_map,
                 metrics: Arc::new(MetricsCollector::new()),
                 approval_broker,
+                persona,
             },
         }
     }
@@ -370,6 +374,38 @@ async fn get_agent_status_handler(
 }
 
 // ============================================================================
+// 查询：会话层系统提示覆盖（对齐 OpenClaw 式「每会话人格」+ 可选 emoji 风格）
+// ============================================================================
+
+/// 合并 Web 端传入的 `session_system_prompt`（本会话人格）与 `use_emoji`（是否在回复中使用表情符号）。
+fn apply_session_query_overrides(config: &mut pa_query::QueryConfig, params: &serde_json::Value) {
+    if let Some(s) = params.get("session_system_prompt").and_then(|v| v.as_str()) {
+        let s = s.trim();
+        if !s.is_empty() {
+            let base = config.system_prompt.trim();
+            config.system_prompt = format!(
+                "{}\n\n【本会话人格与行为设定】\n{}",
+                base, s
+            );
+        }
+    }
+    let use_emoji = params
+        .get("use_emoji")
+        .and_then(|v| {
+            v.as_bool().or_else(|| {
+                v.as_str()
+                    .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
+            })
+        })
+        .unwrap_or(false);
+    if use_emoji {
+        config.system_prompt.push_str(
+            "\n\n【输出风格】在合适处自然使用 Unicode 表情符号（emoji）表达语气；与语境一致，避免堆砌。",
+        );
+    }
+}
+
+// ============================================================================
 // WebSocket 处理
 // ============================================================================
 
@@ -485,8 +521,24 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
             match agents.get(agent_id) {
                 Some(agent_arc) => {
                     let mut agent = agent_arc.write().await;
-                    let config = pa_query::QueryConfig::default();
-                    let result = agent.query_with_task(prompt.to_string(), config).await;
+                    let mut config = agent.build_query_config();
+                    let base_role = config.system_prompt.clone();
+                    config.system_prompt = state.persona.build_system_prompt(
+                        agent_id,
+                        agent.display_name(),
+                        base_role.as_str(),
+                    );
+                    apply_session_query_overrides(&mut config, &params);
+                    let plan_codename = state.persona.next_plan_codename();
+                    let mythic = PersonaRuntime::stable_mythic_codename(agent_id);
+                    let task_meta = serde_json::json!({
+                        "plan_codename": plan_codename,
+                        "system_name": state.persona.system_name(),
+                        "mythic_codename": mythic,
+                    });
+                    let result = agent
+                        .query_with_task(prompt.to_string(), config, Some(task_meta))
+                        .await;
                     state.metrics.inc_requests();
                     MethodResponse::success(&call_id, json!({
                         "result": result,

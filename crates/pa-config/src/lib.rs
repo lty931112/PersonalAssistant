@@ -5,7 +5,9 @@
 pub mod settings;
 pub mod loader;
 pub mod env;
+pub mod persona;
 
-pub use settings::Settings;
+pub use settings::{PersonaSettings, Settings};
 pub use loader::ConfigLoader;
 pub use env::EnvSubstitution;
+pub use persona::PersonaRuntime;

@@ -1,6 +1,7 @@
 //! Gateway 主入口
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use pa_core::{CoreError, AgentId};
@@ -115,6 +116,9 @@ impl Gateway {
         let addr = format!("{}:{}", self.settings.gateway.bind, self.settings.gateway.port);
         tracing::info!("Gateway 启动于 {}", addr);
 
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let persona = Arc::new(PersonaRuntime::load(&cwd, &self.settings.persona));
+
         let server = GatewayServer::new(
             addr,
             self.clients.clone(),
@@ -123,6 +127,7 @@ impl Gateway {
             self.task_manager.clone(),
             self.agents_map.clone(),
             self.approval_broker.clone(),
+            persona,
         );
 
         self.server = Some(server);

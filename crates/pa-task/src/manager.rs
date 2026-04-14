@@ -55,9 +55,15 @@ impl TaskManager {
         agent_id: impl Into<String>,
         prompt: impl Into<String>,
         priority: TaskPriority,
+        metadata: Option<serde_json::Value>,
     ) -> String {
         let mut info = TaskInfo::new(agent_id, prompt);
         info.priority = priority;
+        if let Some(serde_json::Value::Object(extra)) = metadata {
+            if let serde_json::Value::Object(ref mut base) = info.metadata {
+                base.extend(extra);
+            }
+        }
 
         let task_id = info.id.clone();
         debug!("创建任务: {}", task_id);

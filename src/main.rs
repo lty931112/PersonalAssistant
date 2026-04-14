@@ -19,7 +19,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Command, Config};
-use pa_config::Settings;
+use pa_config::{PersonaRuntime, Settings};
 use pa_core::{AgentConfig, PermissionMode};
 use pa_llm::{LlmClient, LlmConfig, LlmProvider};
 use pa_memory::{MemoryConfig, MagmaMemoryEngine};
@@ -407,7 +407,10 @@ async fn start_server(settings: Settings, cli: &Config) -> Result<()> {
     )?;
 
     // 8. 创建 Agent
-    let agent_config = AgentConfig::new("default", "默认智能体")
+    let agent_config = AgentConfig::new(
+        "default",
+        PersonaRuntime::stable_mythic_codename("default"),
+    )
         .with_model(&settings.llm.model)
         .with_max_turns(settings.agent.default_max_turns)
         .with_system_prompt("你是一个有用的 AI 助手。");
@@ -555,8 +558,16 @@ async fn run_query(settings: Settings, cli: &Config, prompt: &str) -> Result<()>
         Some(cli_approval),
     )?;
 
-    // 7. 执行查询
-    let query_config = create_query_config(&settings, cli);
+    // 7. 执行查询（合并「伏羲」人格）
+    let mut query_config = create_query_config(&settings, cli);
+    let base_prompt = query_config.system_prompt.clone();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let persona = PersonaRuntime::load(&cwd, &settings.persona);
+    query_config.system_prompt = persona.build_system_prompt(
+        "default",
+        PersonaRuntime::stable_mythic_codename("default"),
+        &base_prompt,
+    );
 
     info!("开始执行查询...");
     let result = query_engine
