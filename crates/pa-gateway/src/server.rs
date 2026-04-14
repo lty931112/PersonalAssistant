@@ -260,11 +260,9 @@ async fn logs_stream_handler(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.log_broadcast.subscribe();
-    let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), |item| async move {
-        match item {
-            Ok(line) => Some(Ok(Event::default().data(line))),
-            Err(_) => None,
-        }
+    let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), |item| match item {
+        Ok(line) => Some(Ok(Event::default().data(line))),
+        Err(_) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
