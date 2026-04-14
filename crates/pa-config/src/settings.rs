@@ -319,6 +319,8 @@ pub struct FeishuSettings {
     pub encrypt_key: Option<String>,
     /// Webhook URL 路径
     pub webhook_path: String,
+    /// Webhook 监听端口
+    pub port: u16,
     /// 允许的用户列表（空=全部允许）
     pub allowed_users: Vec<String>,
 }
@@ -332,6 +334,7 @@ impl Default for FeishuSettings {
             verification_token: String::new(),
             encrypt_key: None,
             webhook_path: "/feishu/webhook".into(),
+            port: 19871,
             allowed_users: Vec::new(),
         }
     }

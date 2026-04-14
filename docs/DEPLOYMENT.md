@@ -92,6 +92,8 @@ base_url = "${LLM_BASE_URL:-}"             # 可选，默认为空
 [feishu]
 app_id = "${FEISHU_APP_ID}"
 app_secret = "${FEISHU_APP_SECRET}"
+verification_token = "${FEISHU_VERIFICATION_TOKEN}"
+port = 19871
 ```
 
 ### 3.3 完整配置项
@@ -260,33 +262,41 @@ config_path = "config/mcp.toml"
 6. 添加机器人能力
 7. 发布应用
 
-#### 步骤 2: 配置环境变量
-
-```bash
-export FEISHU_APP_ID="cli_xxxxx"
-export FEISHU_APP_SECRET="xxxxx"
-export FEISHU_VERIFICATION_TOKEN="your_verification_token"
-# 可选：覆盖 Webhook 监听端口（默认 19871）
-# export FEISHU_PORT=19871
-```
-
-#### 步骤 3: 启动时启用飞书
-
-```bash
-cargo run -- start --enable-feishu
-```
-
-或在配置文件中：
+#### 步骤 2: 配置文件（推荐）
 
 ```toml
 [feishu]
 enabled = true
-app_id = "${FEISHU_APP_ID}"
-app_secret = "${FEISHU_APP_SECRET}"
-verification_token = "${FEISHU_VERIFICATION_TOKEN}"
+app_id = "cli_xxxxx"
+app_secret = "xxxxx"
+verification_token = "your_verification_token"
 webhook_path = "/feishu/webhook"
+port = 19871
 allowed_users = []              # 空 = 允许所有用户
 # allowed_users = ["ou_xxx"]    # 仅允许指定用户
+# encrypt_key = "xxx"           # 可选
+```
+
+#### 步骤 3: 可选环境变量覆盖
+
+```bash
+# 可选：当配置文件缺失对应字段时用于兜底
+export FEISHU_APP_ID="cli_xxxxx"
+export FEISHU_APP_SECRET="xxxxx"
+export FEISHU_VERIFICATION_TOKEN="your_verification_token"
+# 可选：覆盖配置文件中的监听端口
+# export FEISHU_PORT=19871
+```
+
+说明：
+
+- `app_id` / `app_secret` / `verification_token`：优先读 `[feishu]`，为空时回退 `FEISHU_*`
+- 端口：优先读 `[feishu].port`，`FEISHU_PORT` 可覆盖
+
+#### 步骤 4: 启动时启用飞书
+
+```bash
+cargo run -- start --enable-feishu
 ```
 
 #### 飞书通道注意事项

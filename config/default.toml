@@ -68,6 +68,7 @@ app_secret = "${FEISHU_APP_SECRET}"
 verification_token = "${FEISHU_VERIFICATION_TOKEN}"
 # encrypt_key = ""  # 可选
 webhook_path = "/feishu/webhook"
+port = 19871
 allowed_users = []
 
 # 任务管理配置

@@ -467,7 +467,7 @@ async fn start_server(
     // 11. 可选：启动飞书通道
     if cli.enable_feishu {
         info!("飞书通道已启用，正在初始化...");
-        match init_feishu_channel().await {
+        match init_feishu_channel(&settings).await {
             Ok(()) => {
                 info!("飞书通道已启动");
             }
@@ -683,25 +683,92 @@ async fn init_mcp_tools(tool_registry: &mut ToolRegistry) -> Result<usize> {
 
 /// 初始化飞书通道
 ///
-/// 从环境变量或默认配置加载飞书配置，启动 Webhook 服务器。
-async fn init_feishu_channel() -> Result<()> {
+/// 优先从配置文件读取飞书配置，环境变量作为兜底，启动 Webhook 服务器。
+async fn init_feishu_channel(settings: &Settings) -> Result<()> {
     use pa_channel_feishu::{FeishuChannel, FeishuConfig};
 
-    // 从环境变量读取飞书配置
-    let app_id = std::env::var("FEISHU_APP_ID")
-        .map_err(|_| anyhow::anyhow!("环境变量 FEISHU_APP_ID 未设置"))?;
-    let app_secret = std::env::var("FEISHU_APP_SECRET")
-        .map_err(|_| anyhow::anyhow!("环境变量 FEISHU_APP_SECRET 未设置"))?;
-    let verification_token = std::env::var("FEISHU_VERIFICATION_TOKEN")
-        .map_err(|_| anyhow::anyhow!("环境变量 FEISHU_VERIFICATION_TOKEN 未设置"))?;
+    let feishu_settings = settings.feishu.as_ref();
 
-    let config = FeishuConfig::new(&app_id, &app_secret, &verification_token);
+    let resolve_required = |config_value: Option<&str>, env_key: &str, field_name: &str| -> Result<String> {
+        if let Some(value) = config_value {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
 
-    // 设置监听端口（可通过环境变量覆盖）
+        let env_value = std::env::var(env_key).ok().map(|v| v.trim().to_string());
+        if let Some(value) = env_value {
+            if !value.is_empty() {
+                return Ok(value);
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "飞书配置缺失: {}。请在配置文件 [feishu].{} 中填写，或设置环境变量 {}",
+            field_name,
+            field_name,
+            env_key
+        ))
+    };
+
+    let app_id = resolve_required(
+        feishu_settings.map(|f| f.app_id.as_str()),
+        "FEISHU_APP_ID",
+        "app_id",
+    )?;
+    let app_secret = resolve_required(
+        feishu_settings.map(|f| f.app_secret.as_str()),
+        "FEISHU_APP_SECRET",
+        "app_secret",
+    )?;
+    let verification_token = resolve_required(
+        feishu_settings.map(|f| f.verification_token.as_str()),
+        "FEISHU_VERIFICATION_TOKEN",
+        "verification_token",
+    )?;
+
+    let mut config = FeishuConfig::new(&app_id, &app_secret, &verification_token);
+
+    let encrypt_key_from_config = feishu_settings
+        .and_then(|f| f.encrypt_key.as_ref())
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
+    let encrypt_key = encrypt_key_from_config.or_else(|| {
+        std::env::var("FEISHU_ENCRYPT_KEY")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    });
+
+    if let Some(encrypt_key) = encrypt_key {
+        config = config.with_encrypt_key(encrypt_key);
+    }
+
+    let webhook_path = feishu_settings
+        .map(|f| f.webhook_path.trim())
+        .filter(|path| !path.is_empty())
+        .unwrap_or("/feishu/webhook");
+    config = config.with_webhook_url(webhook_path.to_string());
+
+    if let Some(feishu) = feishu_settings {
+        if !feishu.allowed_users.is_empty() {
+            config = config.with_allowed_users(feishu.allowed_users.clone());
+        }
+    }
+
+    // 设置监听端口：配置文件优先，环境变量 FEISHU_PORT 可覆盖
+    let config_port = feishu_settings.map(|f| f.port).unwrap_or(19871);
     let port: u16 = std::env::var("FEISHU_PORT")
-        .unwrap_or_else(|_| "19871".to_string())
-        .parse()
-        .unwrap_or(19871);
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(config_port);
+
+    info!(
+        "飞书配置来源: app_id/app_secret/verification_token 优先读取配置文件 [feishu]，缺失时回退环境变量；端口优先读取 [feishu].port，环境变量 FEISHU_PORT 可覆盖；最终端口={}",
+        port
+    );
 
     let channel = FeishuChannel::new(config).with_port(port);
     channel.start_server().await
