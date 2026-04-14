@@ -16,7 +16,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tracing::info;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use cli::{Command, Config};
 use pa_config::{PersonaRuntime, Settings};
