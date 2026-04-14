@@ -6,7 +6,7 @@ Workspace 成员定义于根目录 [Cargo.toml](../Cargo.toml) 的 `[workspace.m
 |-------|------|----------|
 | **personal-assistant** | `.` / `src/main.rs` | 可执行包入口；负责 CLI 解析与运行时模块组装 |
 | **pa-core** | `crates/pa-core` | 核心类型：消息、工具定义、Agent 标识与配置、错误等 |
-| **pa-config** | `crates/pa-config` | TOML 加载、`Settings`、环境变量占位符替换 |
+| **pa-config** | `crates/pa-config` | TOML 加载、`Settings`、环境变量占位符替换；**`PersonaRuntime`**（Markdown 人格、山海经/行星代号、`build_system_prompt`） |
 | **pa-llm** | `crates/pa-llm` | LLM 抽象与提供商客户端（如 Anthropic、OpenAI） |
 | **pa-memory** | `crates/pa-memory` | MAGMA：多图存储、向量检索、查询与整合 |
 | **pa-tools** | `crates/pa-tools` | 工具注册表与内置工具（bash、读写文件、搜索、记忆、网页抓取等） |

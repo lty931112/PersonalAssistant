@@ -55,7 +55,7 @@ flowchart TB
 说明：
 
 - **pa-core**：消息、工具协议、错误类型等跨 crate 公共契约，不依赖其他内部 crate。
-- **pa-config**：将 TOML 解析为 `Settings`，并向 `pa_memory::MemoryConfig` 做转换；依赖 `pa-core`、`pa-memory`。
+- **pa-config**：将 TOML 解析为 `Settings`，并向 `pa_memory::MemoryConfig` 做转换；含 **`PersonaRuntime`**（`persona.rs`：全局/按智能体 Markdown、山海经与行星代号、`build_system_prompt`）；依赖 `pa-core`、`pa-memory`。
 - **pa-llm**：面向 `pa-core` 的 LLM 客户端抽象与具体提供商实现。
 - **pa-memory**：MAGMA 记忆引擎（图、向量、查询、整合）；仅依赖 `pa-core`。
 - **pa-tools**：内置工具实现；依赖 `pa-core`、`pa-memory`（如记忆类工具）。
@@ -66,7 +66,7 @@ flowchart TB
 
 ## 运行时数据流（概念）
 
-1. **Gateway**：客户端通过 WebSocket 接入 `GatewayServer`，消息经 `protocol` 与 `Gateway` 调度到具体 Agent / 会话逻辑（详见 `crates/pa-gateway`）。
+1. **Gateway**：客户端通过 WebSocket 接入 `GatewayServer`，消息经 `protocol` 与 `Gateway` 调度到具体 Agent / 会话逻辑（详见 `crates/pa-gateway`）。在 **`query`** 路径上：`Agent::build_query_config` 得到的 `system_prompt` 会经 **`PersonaRuntime::build_system_prompt`** 替换为「伏羲」合并人格（全局/智能体 Markdown 或神兽默认风格 + 领域专家思考策略），再应用会话级覆盖，最后带任务元数据（如 `plan_codename`）进入 `query_with_task`。
 2. **Agent**：`pa-agent` 中的 `Agent` 与 `AgentRouter` 负责多 Agent 路由与运行时状态；工具执行可走 `SandboxExecutor` 等路径。
 3. **Reask 循环**：`pa-query::QueryEngine` 驱动「LLM 响应 → `tool_use` → 执行工具 → 将 `tool_result` 写回上下文 → 再次请求」的闭环，并与记忆检索集成（见 `crates/pa-query/src/lib.rs` 模块注释）。
 

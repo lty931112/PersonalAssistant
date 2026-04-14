@@ -81,6 +81,39 @@ api_key = "${ANTHROPIC_API_KEY}"
 | `disabled` | 禁用工具名列表 |
 | `permission_mode` | 权限模式字符串，如 `default`、`accept_edits`、`bypass_permissions`、`plan`、`auto`（具体语义由 `pa-query` / Agent 侧解释） |
 
+### `[persona]`（「伏羲」人格与命名）
+
+系统品牌与智能体人格由 `PersonaSettings` 描述（`crates/pa-config/src/settings.rs`），运行时逻辑在 `PersonaRuntime`（`crates/pa-config/src/persona.rs`）。路径均相对于**进程当前工作目录**（一般为项目或服务启动目录）。
+
+| 字段 | 说明 |
+|------|------|
+| `system_name` | 系统展示名（默认 `伏羲`），写入合并后的系统提示抬头 |
+| `use_markdown_persona` | 为 `true` 时读取下方 Markdown；为 `false` 时不读文件，仍使用山海经代号与行星计划名等逻辑 |
+| `global_markdown_path` | 全局人格 Markdown，如 `config/persona/global.md` |
+| `agents_markdown_dir` | 按智能体人格目录，其下文件名为 `<agent_id>.md`（如 `default.md`） |
+
+**人格优先级（对模型可见的 `system_prompt`）**
+
+1. **本智能体 Markdown**（`{agents_markdown_dir}/{agent_id}.md`）非空时：以其中内容作为该智能体的**主要人格**（语气、立场、习惯表达）；山海经代号为协作用稳定标识，不覆盖用户文案。
+2. **未配置或文件为空**：按 `agent_id` 稳定哈希映射《山海经》神兽名，并注入该神兽的**默认对话风格**（仅约束表达习惯，不编造事实）。
+3. 全局 Markdown 与「基础角色」句、固定策略块（领域专家思考、面向用户须符合人格等）由 `PersonaRuntime::build_system_prompt` 一并合并；Gateway 在合并后仍会叠加 WebSocket 参数中的本会话覆盖（如 `session_system_prompt`、`use_emoji`）。
+
+**命名与任务元数据**
+
+- **山海经代号**：`PersonaRuntime::stable_mythic_codename(agent_id)`，同一 `agent_id` 不变，供多智能体对齐。
+- **任务/计划代号**：经 Gateway 发起的查询会为任务写入 `metadata` 中的 `plan_codename`（水星、金星…循环），以及 `system_name`、`mythic_codename`（见 `pa-task` / `TaskInfo.metadata`）。
+- **流程块/编排节点**：可调用 `PersonaRuntime::next_flow_block_codename()`从神兽池中顺序取名（与智能体稳定代号独立计数）。
+
+仓库示例文件：[config/persona/global.md](../config/persona/global.md)、[config/persona/agents/default.md](../config/persona/agents/default.md)。
+
+### `[task]`
+
+| 字段 | 说明 |
+|------|------|
+| `db_path` | SQLite 任务库路径 |
+| `cleanup_days` | 自动清理天数 |
+| `max_concurrent_tasks` | 最大并发任务数 |
+
 ## Windows 环境变量
 
 README 中的 `export VAR=value` 适用于 Unix shell。在 PowerShell 中可使用：

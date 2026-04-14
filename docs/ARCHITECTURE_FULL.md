@@ -545,6 +545,13 @@ allowed_users = []
 db_path = ".pa/tasks.db"
 cleanup_days = 30
 max_concurrent_tasks = 10
+
+# 「伏羲」人格：Markdown 路径相对工作区根；详见 docs/CONFIGURATION.md
+[persona]
+system_name = "伏羲"
+use_markdown_persona = true
+global_markdown_path = "config/persona/global.md"
+agents_markdown_dir = "config/persona/agents"
 ```
 
 ### 7.2 MCP Server 配置 (config/mcp.toml)

@@ -6,4 +6,4 @@
 |------|------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Workspace 分层、crate 依赖关系与运行时数据流 |
 | [CRATES.md](./CRATES.md) | 各 crate 职责与主要入口模块 |
-| [CONFIGURATION.md](./CONFIGURATION.md) | TOML 配置项、`Settings` 映射与环境变量替换规则 |
+| [CONFIGURATION.md](./CONFIGURATION.md) | TOML 配置项、`Settings` 映射与环境变量替换规则（含 **`[persona]`「伏羲」人格**） |
