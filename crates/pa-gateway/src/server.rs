@@ -3,7 +3,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio::sync::oneshot;
 use axum::{
     Router,
     routing::{get, post},
@@ -55,6 +57,20 @@ pub struct AppState {
     pub persona: Arc<PersonaRuntime>,
     /// 实时日志广播（tracing 副本，SSE：`/api/logs/stream`）
     pub log_broadcast: LogBroadcast,
+    /// 子流程状态（主流程负责下发与监控）
+    pub subflow_states: Arc<RwLock<HashMap<String, SubflowState>>>,
+    /// 子流程执行句柄
+    pub subflow_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+}
+
+/// 查询子流程状态
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubflowState {
+    pub call_id: String,
+    pub agent_id: String,
+    pub task_id: Option<String>,
+    pub state: String,
+    pub message: Option<String>,
 }
 
 /// Gateway 服务器
@@ -87,6 +103,8 @@ impl GatewayServer {
                 approval_broker,
                 persona,
                 log_broadcast,
+                subflow_states: Arc::new(RwLock::new(HashMap::new())),
+                subflow_handles: Arc::new(RwLock::new(HashMap::new())),
             },
         }
     }
@@ -107,6 +125,8 @@ impl GatewayServer {
             .route("/api/tasks/:id/pause", post(pause_task_handler))
             .route("/api/tasks/:id/resume", post(resume_task_handler))
             .route("/api/tasks/:id/cancel", post(cancel_task_handler))
+            .route("/api/subflows", get(list_subflows_handler))
+            .route("/api/subflows/:id/cancel", post(cancel_subflow_handler))
             // Agent 管理 API
             .route("/api/agents", get(list_agents_handler))
             .route("/api/agents/:id/status", get(get_agent_status_handler))
@@ -179,6 +199,7 @@ fn gateway_auth_skip(request: &Request) -> bool {
 /// - WebSocket 客户端连接数
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let start_time = std::time::Instant::now();
+    let lock_timeout = Duration::from_millis(300);
 
     // 检查 Agent 状态
     let agents = state.agents_map.read().await;
@@ -186,18 +207,34 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let mut all_healthy = true;
 
     for (id, agent) in agents.iter() {
-        let status = agent.read().await.get_status().await;
-        let is_healthy = status.state == "idle" || status.state == "running";
-        if !is_healthy {
-            all_healthy = false;
+        // 查询过程中 Agent 可能持有写锁较长时间；健康检查采用短超时，避免 /health 被阻塞。
+        match tokio::time::timeout(lock_timeout, agent.read()).await {
+            Ok(agent_guard) => {
+                let status = agent_guard.get_status().await;
+                let is_healthy = status.state == "idle" || status.state == "running";
+                if !is_healthy {
+                    all_healthy = false;
+                }
+                agent_health.push(serde_json::json!({
+                    "id": id,
+                    "state": status.state,
+                    "healthy": is_healthy,
+                    "completed_tasks": status.completed_tasks,
+                    "total_tokens": status.total_tokens,
+                }));
+            }
+            Err(_) => {
+                all_healthy = false;
+                agent_health.push(serde_json::json!({
+                    "id": id,
+                    "state": "busy",
+                    "healthy": false,
+                    "reason": "agent_lock_timeout",
+                    "completed_tasks": 0,
+                    "total_tokens": 0,
+                }));
+            }
         }
-        agent_health.push(serde_json::json!({
-            "id": id,
-            "state": status.state,
-            "healthy": is_healthy,
-            "completed_tasks": status.completed_tasks,
-            "total_tokens": status.total_tokens,
-        }));
     }
     drop(agents);
 
@@ -356,6 +393,94 @@ async fn cancel_task_handler(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// 列出查询子流程状态（主流程监控视角）
+async fn list_subflows_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let states = state.subflow_states.read().await;
+    let items: Vec<SubflowState> = states.values().cloned().collect();
+    Json(json!({
+        "subflows": items,
+        "count": items.len(),
+    }))
+}
+
+/// 取消子流程（通过子流程关联的 task_id 触发取消）
+async fn cancel_subflow_handler(
+    State(state): State<AppState>,
+    Path(subflow_id): Path<String>,
+) -> impl IntoResponse {
+    let maybe_task_id = {
+        let states = state.subflow_states.read().await;
+        states.get(&subflow_id).and_then(|s| s.task_id.clone())
+    };
+
+    // 第一阶段：子流程尚未创建 task_id（或创建前），直接中止子流程句柄
+    if maybe_task_id.is_none() {
+        let aborted = {
+            let mut handles = state.subflow_handles.write().await;
+            if let Some(handle) = handles.remove(&subflow_id) {
+                handle.abort();
+                true
+            } else {
+                false
+            }
+        };
+
+        if aborted {
+            let mut states = state.subflow_states.write().await;
+            if let Some(s) = states.get_mut(&subflow_id) {
+                s.state = "cancelled".to_string();
+                s.message = Some("子流程已在分配 task_id 前中止".to_string());
+            }
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "cancelled",
+                    "subflow_id": subflow_id,
+                    "phase": "before_task_created"
+                })),
+            );
+        }
+
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "subflow 不存在",
+                "subflow_id": subflow_id
+            })),
+        );
+    }
+
+    let task_id = maybe_task_id.unwrap_or_default();
+
+    match state.task_manager.cancel_task(&task_id).await {
+        Ok(()) => {
+            let mut states = state.subflow_states.write().await;
+            if let Some(s) = states.get_mut(&subflow_id) {
+                s.state = "cancel_requested".to_string();
+                s.message = Some("已提交取消请求".to_string());
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "cancel_requested",
+                    "subflow_id": subflow_id,
+                    "task_id": task_id
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": e.to_string(),
+                "subflow_id": subflow_id,
+                "task_id": task_id
+            })),
         ),
     }
 }
@@ -537,39 +662,117 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
                 strategy: "direct".to_string(),
             });
 
-            // 查找目标 Agent
-            let agents = state.agents_map.read().await;
-            match agents.get(agent_id) {
-                Some(agent_arc) => {
-                    let mut agent = agent_arc.write().await;
-                    let mut config = agent.build_query_config();
-                    let base_role = config.system_prompt.clone();
-                    config.system_prompt = state.persona.build_system_prompt(
-                        agent_id,
-                        agent.display_name(),
-                        base_role.as_str(),
-                    );
-                    apply_session_query_overrides(&mut config, &params);
-                    let plan_codename = state.persona.next_plan_codename();
-                    let mythic = PersonaRuntime::stable_mythic_codename(agent_id);
-                    let task_meta = serde_json::json!({
-                        "plan_codename": plan_codename,
-                        "system_name": state.persona.system_name(),
-                        "mythic_codename": mythic,
-                    });
-                    let result = agent
-                        .query_with_task(prompt.to_string(), config, Some(task_meta))
-                        .await;
-                    state.metrics.inc_requests();
-                    MethodResponse::success(&call_id, json!({
-                        "result": result,
-                        "agent_id": agent_id,
-                    }))
+            // 查找目标 Agent（主流程只做任务下发；实际执行在子流程中）
+            let agent_arc = {
+                let agents = state.agents_map.read().await;
+                agents.get(agent_id).cloned()
+            };
+
+            let Some(agent_arc) = agent_arc else {
+                MethodResponse::error(&call_id, format!("Agent {} 不存在", agent_id))
+            };
+
+            let (mut config, display_name) = {
+                let agent = agent_arc.read().await;
+                (agent.build_query_config(), agent.display_name().to_string())
+            };
+            let base_role = config.system_prompt.clone();
+            config.system_prompt = state.persona.build_system_prompt(
+                agent_id,
+                display_name.as_str(),
+                base_role.as_str(),
+            );
+            apply_session_query_overrides(&mut config, &params);
+            let plan_codename = state.persona.next_plan_codename();
+            let mythic = PersonaRuntime::stable_mythic_codename(agent_id);
+            let task_meta = serde_json::json!({
+                "plan_codename": plan_codename,
+                "system_name": state.persona.system_name(),
+                "mythic_codename": mythic,
+            });
+
+            let subflow_id = call_id.clone();
+            {
+                let mut states = state.subflow_states.write().await;
+                states.insert(
+                    subflow_id.clone(),
+                    SubflowState {
+                        call_id: subflow_id.clone(),
+                        agent_id: agent_id.to_string(),
+                        task_id: None,
+                        state: "queued".to_string(),
+                        message: None,
+                    },
+                );
+            }
+
+            let (result_tx, result_rx) = oneshot::channel();
+            let state_clone = state.clone();
+            let prompt_owned = prompt.to_string();
+            let agent_id_owned = agent_id.to_string();
+            let subflow_id_for_task = subflow_id.clone();
+            let handle = tokio::spawn(async move {
+                {
+                    let mut states = state_clone.subflow_states.write().await;
+                    if let Some(s) = states.get_mut(&subflow_id_for_task) {
+                        s.state = "running".to_string();
+                    }
                 }
-                None => {
-                    MethodResponse::error(&call_id, format!("Agent {} 不存在", agent_id))
+
+                let task_output = {
+                    let mut agent = agent_arc.write().await;
+                    agent
+                        .query_with_task(prompt_owned, config, Some(task_meta))
+                        .await
+                };
+
+                {
+                    let mut states = state_clone.subflow_states.write().await;
+                    if let Some(s) = states.get_mut(&subflow_id_for_task) {
+                        s.task_id = Some(task_output.task_id.clone());
+                        s.state = "completed".to_string();
+                        s.message = None;
+                    }
+                }
+
+                let _ = result_tx.send(task_output);
+                tracing::debug!("查询子流程完成: call_id={}, agent_id={}", subflow_id_for_task, agent_id_owned);
+            });
+
+            {
+                let mut handles = state.subflow_handles.write().await;
+                handles.insert(subflow_id.clone(), handle);
+            }
+
+            let task_output = match result_rx.await {
+                Ok(v) => v,
+                Err(_) => {
+                    let mut states = state.subflow_states.write().await;
+                    if let Some(s) = states.get_mut(&subflow_id) {
+                        s.state = "failed".to_string();
+                        s.message = Some("子流程异常终止".to_string());
+                    }
+                    return serde_json::to_string(&MethodResponse::error(
+                        &call_id,
+                        "查询子流程异常终止".to_string(),
+                    ))
+                    .unwrap_or_else(|_| json!({"error": "序列化响应失败"}).to_string());
+                }
+            };
+
+            {
+                let mut handles = state.subflow_handles.write().await;
+                if let Some(h) = handles.remove(&subflow_id) {
+                    let _ = h.await;
                 }
             }
+
+            state.metrics.inc_requests();
+            MethodResponse::success(&call_id, json!({
+                "result": task_output.output,
+                "task_id": task_output.task_id,
+                "agent_id": agent_id,
+            }))
         }
 
         // 取消方法：取消当前任务

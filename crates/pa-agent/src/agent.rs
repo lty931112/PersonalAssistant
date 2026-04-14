@@ -41,6 +41,15 @@ pub struct AgentStatusInfo {
     pub total_cost: f64,
 }
 
+/// Agent 子流程执行结果
+#[derive(Debug, Clone)]
+pub struct AgentTaskOutput {
+    /// 任务 ID
+    pub task_id: String,
+    /// 最终输出文本（成功/失败描述）
+    pub output: String,
+}
+
 /// Agent 句柄（用于远程控制）
 pub struct AgentHandle {
     pub id: AgentId,
@@ -154,7 +163,7 @@ impl Agent {
         prompt: String,
         config: pa_query::QueryConfig,
         task_metadata: Option<serde_json::Value>,
-    ) -> String {
+    ) -> AgentTaskOutput {
         // 1. 创建任务
         let task_id = self.task_manager.create_task(
             self.config.id.as_str(),
@@ -177,7 +186,10 @@ impl Agent {
         if let Err(e) = self.task_manager.start_task(&task_id).await {
             tracing::error!("启动任务失败: {}", e);
             *self.state.write().await = AgentState::Error(e.to_string());
-            return format!("任务启动失败: {}", e);
+            return AgentTaskOutput {
+                task_id,
+                output: format!("任务启动失败: {}", e),
+            };
         }
 
         // 5. 执行查询（`config` 已由调用方基于 Agent 默认值并合并会话覆盖）
@@ -220,13 +232,19 @@ impl Agent {
                 }
                 *self.state.write().await = AgentState::Idle;
                 self.cancel_token = None;
-                output
+                AgentTaskOutput {
+                    task_id,
+                    output,
+                }
             }
             Err(e) => {
                 let _ = self.task_manager.fail_task(&task_id, e.to_string()).await;
                 *self.state.write().await = AgentState::Error(e.to_string());
                 self.cancel_token = None;
-                format!("任务执行失败: {}", e)
+                AgentTaskOutput {
+                    task_id,
+                    output: format!("任务执行失败: {}", e),
+                }
             }
         }
     }
