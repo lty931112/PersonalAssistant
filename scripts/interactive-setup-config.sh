@@ -27,28 +27,34 @@ show_volcengine_codeplan_guide() {
 【火山引擎 · 方舟 Coding Plan / Code套餐 — 接到本项目】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-本项目 LLM 层使用「OpenAI 兼容」客户端（pa-llm）。火山方舟若开通 Coding相关
-套餐，一般应使用 **Coding 专用 OpenAPI 前缀**，与普通推理 `/api/v3` 区分。
+若开通 Coding 相关套餐，应使用 **Coding 专用前缀**（与普通按量推理 `/api/v3` 区分）。
 
 1) 在火山引擎控制台创建 API Key、确认模型或接入点（Endpoint ID）。
 
-2) 在即将生成的 default.toml 的 [llm] 中请按下面原则填写：
+2) 在 default.toml [llm] 中按协议二选一（本项目 pa-llm 两种均支持）：
 
+   【OpenAI 兼容】调用走 OpenAI 式 Chat Completions：
    provider = "openai"
-   # 与官方文档一致；若你账号使用其它地域，以控制台为准
    base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
    api_key  = "你的 ARK_API_KEY"
-   # model：填控制台给出的「推理接入点 ID」或文档要求的模型名（如 ep-xxxx）
+   # model：接入点 ID 等（如 ep-xxxx），以控制台为准
 
- 若你使用的是**普通方舟推理**（非 Coding 专线），常见为：
+   【Anthropic 兼容】调用走 Anthropic Messages API（/v1/messages）：
+   provider = "anthropic"
+   base_url = "https://ark.cn-beijing.volces.com/api/coding"
+   api_key  = "你的 ARK_API_KEY"
+   # model：同上，以控制台为准
+   # 说明：程序会将请求发到「base_url + /v1/messages」，请勿在 base_url 末尾多写 /v1
+
+3) 若使用**普通方舟推理**（非 Coding 专线），常见 OpenAI 式为：
    base_url = "https://ark.cn-beijing.volces.com/api/v3"
+   Anthropic 兼容通用前缀常见为（非 Coding 时以文档为准）：
+   base_url = "https://ark.cn-beijing.volces.com/api/compatible"
 
-3) 务必以火山当前文档为准，路径或域名变更时请替换 base_url：
+4) 务必以火山当前文档为准，地域/路径变更时请替换 base_url：
    https://www.volcengine.com/docs/82379/
-   社区实践参考（OpenClaw + Coding Plan + 飞书）：
-   https://developer.volcengine.com/articles/7604877625928777778
 
-4) 本脚本在菜单里提供「预设：火山方舟 Coding（OpenAI 兼容）」可一键填入 上述 base_url，你只需再填 api_key 与 model。
+5) 菜单「火山方舟 Coding Plan」下可选择 OpenAI 或 Anthropic 模式，并预填上述 base_url。
 
 DOC
 }
@@ -227,7 +233,7 @@ main() {
   echo "选择 LLM 配置方式："
   echo "  1) Anthropic（默认 Claude，api_key 用 ANTHROPIC_API_KEY）"
   echo "  2) OpenAI或兼容服务（自定义 base_url，如本地 vLLM）"
-  echo "  3) 火山方舟 Coding Plan（OpenAI 兼容，预设 coding base_url）"
+  echo "  3) 火山方舟 Coding Plan（可选 OpenAI 或 Anthropic 协议，预设 coding base_url）"
   read -r -p "请选择1/2/3 [默认 1]: " LLM_CHOICE
   LLM_CHOICE="${LLM_CHOICE:-1}"
 
@@ -243,10 +249,24 @@ main() {
       LLM_BASE_URL="$(prompt "base_url（无则留空走官方 OpenAI）" "")"
       ;;
     3)
-      LLM_PROVIDER="openai"
-      LLM_MODEL="$(prompt "model / 接入点 ID（如 ep-xxxx或文档中的模型名）" "ep-请替换")"
+      echo ""
+      echo "火山 Coding Plan — 选择 API 协议："
+      echo "  a) OpenAI 兼容（base_url 默认 …/api/coding/v3）"
+      echo "  b) Anthropic 兼容 / Messages API（base_url 默认 …/api/coding）"
+      read -r -p "请选择 a/b [默认 a]: " ARK_PROTO
+      ARK_PROTO="${ARK_PROTO:-a}"
+      LLM_MODEL="$(prompt "model / 接入点 ID（如 ep-xxxx 或文档中的模型名）" "ep-请替换")"
       LLM_API_KEY="$(prompt "api_key（ARK API Key，可写 \${ARK_API_KEY}）" '${ARK_API_KEY}')"
-      LLM_BASE_URL="$(prompt "base_url" "https://ark.cn-beijing.volces.com/api/coding/v3")"
+      case "${ARK_PROTO}" in
+        b|B)
+          LLM_PROVIDER="anthropic"
+          LLM_BASE_URL="$(prompt "base_url（Anthropic Messages前缀，勿含 /v1）" "https://ark.cn-beijing.volces.com/api/coding")"
+          ;;
+        *)
+          LLM_PROVIDER="openai"
+          LLM_BASE_URL="$(prompt "base_url" "https://ark.cn-beijing.volces.com/api/coding/v3")"
+          ;;
+      esac
       ;;
     *)
       LLM_MODEL="$(prompt "model" "claude-sonnet-4-20250514")"
