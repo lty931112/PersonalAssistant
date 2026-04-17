@@ -90,7 +90,9 @@ type Action =
   | { type: 'SET_HEALTH_DETAIL'; payload: HealthDetail | null }
   | { type: 'SET_ALERTS'; payload: AlertRecord[] }
   | { type: 'ADD_ALERT'; payload: AlertRecord }
-  | { type: 'SET_PENDING_APPROVALS'; payload: ToolApprovalRequest[] };
+  | { type: 'SET_PENDING_APPROVALS'; payload: ToolApprovalRequest[] }
+  /** WebSocket 断开或异常时清除所有「思考中」状态，避免永远卡在流式 */
+  | { type: 'RESET_ASSISTANT_STREAMING' };
 
 // ============================================================
 // 初始状态
@@ -261,6 +263,17 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'SET_PENDING_APPROVALS':
       return { ...state, pendingApprovals: action.payload };
 
+    case 'RESET_ASSISTANT_STREAMING':
+      return {
+        ...state,
+        conversations: state.conversations.map((conv) => ({
+          ...conv,
+          messages: conv.messages.map((m) =>
+            m.role === 'assistant' && m.isStreaming ? { ...m, isStreaming: false } : m
+          ),
+        })),
+      };
+
     default:
       return state;
   }
@@ -293,11 +306,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const wsClientRef = useRef<WebSocketClient | null>(null);
   const currentAssistantMsgIdRef = useRef<string | null>(null);
+  /** 每条 query 的 WebSocket `id` → 对应助手气泡，避免连发/切会话时响应写到错误消息上 */
+  const pendingAssistantByRequestIdRef = useRef<
+    Map<string, { conversationId: string; messageId: string }>
+  >(new Map());
   /** WebSocket 回调在 mount 时固定，须用 ref 读取「当前」会话，否则会一直停在「思考中」 */
   const activeConversationIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
   activeConversationIdRef.current = state.activeConversationId;
   conversationsRef.current = state.conversations;
+
+  /** 断线后无法收到 MethodResponse，清除未决映射并结束所有「思考中」 */
+  useEffect(() => {
+    if (state.wsState === 'disconnected' || state.wsState === 'error') {
+      pendingAssistantByRequestIdRef.current.clear();
+      dispatch({ type: 'RESET_ASSISTANT_STREAMING' });
+    }
+  }, [state.wsState]);
 
   // 初始化：加载设置
   useEffect(() => {
@@ -470,13 +495,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'TurnComplete': {
           // 回合完成，标记消息流式结束
           if (currentAssistantMsgIdRef.current) {
+            const mid = currentAssistantMsgIdRef.current;
+            const staleReqIds: string[] = [];
+            pendingAssistantByRequestIdRef.current.forEach((v, k) => {
+              if (v.messageId === mid) staleReqIds.push(k);
+            });
+            staleReqIds.forEach((k) => pendingAssistantByRequestIdRef.current.delete(k));
+
             const convId = activeConversationIdRef.current;
             if (convId) {
               dispatch({
                 type: 'SET_MESSAGE_STREAMING',
                 payload: {
                   conversationId: convId,
-                  messageId: currentAssistantMsgIdRef.current,
+                  messageId: mid,
                   isStreaming: false,
                 },
               });
@@ -493,13 +525,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'Error': {
           dispatch({ type: 'SET_ERROR', payload: event.message || '发生错误' });
           if (currentAssistantMsgIdRef.current) {
+            const mid = currentAssistantMsgIdRef.current;
+            const staleReqIds: string[] = [];
+            pendingAssistantByRequestIdRef.current.forEach((v, k) => {
+              if (v.messageId === mid) staleReqIds.push(k);
+            });
+            staleReqIds.forEach((k) => pendingAssistantByRequestIdRef.current.delete(k));
+
             const convId = activeConversationIdRef.current;
             if (convId) {
               dispatch({
                 type: 'SET_MESSAGE_STREAMING',
                 payload: {
                   conversationId: convId,
-                  messageId: currentAssistantMsgIdRef.current,
+                  messageId: mid,
                   isStreaming: false,
                 },
               });
@@ -520,13 +559,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // 不会推送 Event/TurnComplete；必须在此结束「思考中」并写入回复。
     if ('id' in message && !('kind' in message)) {
       const resp = message as WSResponse;
-      const msgId = currentAssistantMsgIdRef.current;
-      if (!msgId) {
-        return;
+      const pending = pendingAssistantByRequestIdRef.current.get(resp.id);
+      if (pending) {
+        pendingAssistantByRequestIdRef.current.delete(resp.id);
       }
-      const convId = activeConversationIdRef.current;
-      if (!convId) {
-        currentAssistantMsgIdRef.current = null;
+      const convId = pending?.conversationId ?? activeConversationIdRef.current;
+      const msgId = pending?.messageId ?? currentAssistantMsgIdRef.current;
+      if (!msgId || !convId) {
         return;
       }
 
@@ -543,7 +582,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           type: 'SET_MESSAGE_STREAMING',
           payload: { conversationId: convId, messageId: msgId, isStreaming: false },
         });
-        currentAssistantMsgIdRef.current = null;
+        if (currentAssistantMsgIdRef.current === msgId) {
+          currentAssistantMsgIdRef.current = null;
+        }
         dispatch({ type: 'CLEAR_TOOL_CALLS' });
         void refreshTasks();
         return;
@@ -573,7 +614,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         type: 'SET_MESSAGE_STREAMING',
         payload: { conversationId: convId, messageId: msgId, isStreaming: false },
       });
-      currentAssistantMsgIdRef.current = null;
+      if (currentAssistantMsgIdRef.current === msgId) {
+        currentAssistantMsgIdRef.current = null;
+      }
       dispatch({ type: 'CLEAR_TOOL_CALLS' });
       void refreshTasks();
       void refreshAgents();
@@ -676,9 +719,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // 记录当前助手消息 ID
     currentAssistantMsgIdRef.current = assistantMsgId;
 
+    const requestId = generateId();
+    pendingAssistantByRequestIdRef.current.set(requestId, {
+      conversationId: convId,
+      messageId: assistantMsgId,
+    });
+
     // 通过 WebSocket 发送查询（会话人格 / emoji 由网关合并进系统提示）
     client.send({
-      id: generateId(),
+      id: requestId,
       method: 'query',
       params: {
         prompt,

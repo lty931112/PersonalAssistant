@@ -309,7 +309,11 @@ impl QueryEngine {
         config: QueryConfig,
         event_tx: mpsc::Sender<QueryEvent>,
     ) -> Result<QueryOutcome, CoreError> {
-        tracing::info!(model = %config.model, max_turns = config.max_turns, "开始 reask 循环");
+        tracing::info!(
+            "[信息] 开始 reask 循环 model={} max_turns={}",
+            config.model,
+            config.max_turns
+        );
 
         let trace = TraceEmitter::new(self.audit_sink.clone());
         let _ = event_tx
@@ -399,6 +403,13 @@ impl QueryEngine {
             }
 
             // 调用 LLM
+            tracing::info!(
+                "[模型] turn={} 请求 LLM: model={} history_msgs={} tool_defs={}",
+                turn,
+                config.model,
+                self.conversation_history.len(),
+                tool_definitions.len()
+            );
             let response = match self.llm_client.complete(
                 &self.conversation_history,
                 &tool_definitions,
@@ -406,6 +417,11 @@ impl QueryEngine {
             ).await {
                 Ok(r) => r,
                 Err(error) => {
+                    tracing::error!(
+                        "[错误] turn={} LLM 调用失败: {}",
+                        turn,
+                        error
+                    );
                     let action = ErrorClassifier::classify(&error);
                     match action {
                         ErrorAction::Retry { after_ms } => {
@@ -440,6 +456,15 @@ impl QueryEngine {
             // 更新使用量
             self.total_usage.input_tokens += response.usage.input_tokens;
             self.total_usage.output_tokens += response.usage.output_tokens;
+
+            tracing::info!(
+                "[模型] turn={} LLM 响应: stop_reason={:?} in_tok={} out_tok={} blocks={}",
+                turn,
+                response.stop_reason,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                response.content.len()
+            );
 
             trace
                 .emit(
@@ -498,7 +523,7 @@ impl QueryEngine {
                     });
                 }
                 StopReason::ToolUse => {
-                    tracing::debug!(turn, "tool_use，执行工具");
+                    tracing::info!(turn, "[工具] 模型要求调用工具，开始执行本回合工具批次");
 
                     // ---- 中断检查：工具执行前 ----
                     if self.is_cancelled() {
@@ -1068,7 +1093,12 @@ impl QueryEngine {
         trace: &TraceEmitter,
         turn: u32,
     ) -> Vec<(String, pa_core::ToolResult)> {
-        tracing::info!(tool_count = tool_calls.len(), "执行工具");
+        tracing::info!(
+            "[工具] turn={} 本回合共 {} 个工具调用: {:?}",
+            turn,
+            tool_calls.len(),
+            tool_calls.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>()
+        );
 
         let names: Vec<String> = tool_calls.iter().map(|(_, n, _)| n.clone()).collect();
         trace
@@ -1233,6 +1263,15 @@ impl QueryEngine {
                         input_json: input.clone(),
                     }).await;
 
+                    tracing::info!(
+                        "[工具] turn={} 开始(并发组) tool={} id={} input={}",
+                        turn,
+                        name,
+                        id,
+                        serde_json::to_string(&QueryEngine::summarize_tool_input(&name, &input))
+                            .unwrap_or_else(|_| "{}".to_string())
+                    );
+
                     // 执行工具
                     let result = registry.execute(&name, &id, input).await;
                     let tool_result = match &result {
@@ -1260,6 +1299,15 @@ impl QueryEngine {
                         result: tool_result.content.clone(),
                         is_error: tool_result.is_error,
                     }).await;
+
+                    tracing::info!(
+                        "[工具] turn={} 结束(并发组) tool={} id={} ok={} result_chars={}",
+                        turn,
+                        name,
+                        id,
+                        !tool_result.is_error,
+                        tool_result.content.chars().count()
+                    );
 
                     (idx, id, tool_result)
                 });
@@ -1440,6 +1488,15 @@ impl QueryEngine {
                 input_json: input.clone(),
             }).await;
 
+            tracing::info!(
+                "[工具] turn={} 开始(顺序) tool={} id={} input={}",
+                turn,
+                name,
+                id,
+                serde_json::to_string(&Self::summarize_tool_input(name, input))
+                    .unwrap_or_else(|_| "{}".to_string())
+            );
+
             // 执行工具
             let result = self.tool_registry.execute(name, id, input.clone()).await;
             let tool_result = match &result {
@@ -1467,6 +1524,15 @@ impl QueryEngine {
                 result: tool_result.content.clone(),
                 is_error: tool_result.is_error,
             }).await;
+
+            tracing::info!(
+                "[工具] turn={} 结束(顺序) tool={} id={} ok={} result_chars={}",
+                turn,
+                name,
+                id,
+                !tool_result.is_error,
+                tool_result.content.chars().count()
+            );
 
             results.push((*idx, id.clone(), tool_result));
         }
@@ -1613,7 +1679,11 @@ impl QueryEngine {
             return;
         }
 
-        tracing::warn!(total, budget, "工具结果超出预算，截断中");
+        tracing::warn!(
+            "[信息] 工具结果超出预算，截断中 total={} budget={}",
+            total,
+            budget
+        );
         let scale = budget as f64 / total as f64;
 
         for (mi, bi, _) in &tool_chars {

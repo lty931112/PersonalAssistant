@@ -19,9 +19,16 @@ use axum::{
 };
 use crate::auth::{extract_gateway_credential, gateway_auth_enabled, verify_gateway_credential};
 use tower_http::cors::CorsLayer;
-use futures_util::{SinkExt, StreamExt as FuturesStreamExt, stream::Stream};
+use futures_util::{
+    SinkExt,
+    StreamExt as FuturesStreamExt,
+    stream::{self, Stream},
+};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use tokio_stream::{StreamExt as TokioStreamExt, wrappers::BroadcastStream};
+use tokio_stream::{
+    StreamExt as TokioStreamExt,
+    wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
+};
 use std::convert::Infallible;
 use serde::Deserialize;
 use serde_json::json;
@@ -296,11 +303,20 @@ async fn metrics_handler(State(state): State<AppState>) -> String {
 async fn logs_stream_handler(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let welcome = stream::iter(vec![Ok::<Event, Infallible>(
+        Event::default().data(
+            "[事件] 已连接实时日志（SSE）；以下为网关进程中 tracing 输出（含 [模型]/[工具]/[信息]/[错误] 等标记行）。",
+        ),
+    )]);
     let rx = state.log_broadcast.subscribe();
-    let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), |item| match item {
+    let logs = TokioStreamExt::filter_map(BroadcastStream::new(rx), |item| match item {
         Ok(line) => Some(Ok(Event::default().data(line))),
-        Err(_) => None,
+        Err(BroadcastStreamRecvError::Lagged(n)) => Some(Ok(Event::default().data(format!(
+            "[事件] 日志频道滞后，已跳过约 {} 条更早记录；后续输出正常。",
+            n
+        )))),
     });
+    let stream = FuturesStreamExt::chain(welcome, logs);
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -710,6 +726,13 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
                 );
             }
 
+            tracing::info!(
+                "[信息] 查询子流程入队: call_id={} agent_id={} prompt_chars={}",
+                subflow_id,
+                agent_id,
+                prompt.len()
+            );
+
             let (result_tx, result_rx) = oneshot::channel();
             let state_clone = state.clone();
             let prompt_owned = prompt.to_string();
@@ -740,7 +763,11 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
                 }
 
                 let _ = result_tx.send(task_output);
-                tracing::debug!("查询子流程完成: call_id={}, agent_id={}", subflow_id_for_task, agent_id_owned);
+                tracing::info!(
+                    "[信息] 查询子流程执行完毕: call_id={} agent_id={}",
+                    subflow_id_for_task,
+                    agent_id_owned
+                );
             });
 
             {
@@ -751,6 +778,10 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
             let task_output = match result_rx.await {
                 Ok(v) => v,
                 Err(_) => {
+                    tracing::error!(
+                        "[错误] 查询子流程异常终止（oneshot 断开，多为子任务 panic）: call_id={}",
+                        subflow_id
+                    );
                     let mut states = state.subflow_states.write().await;
                     if let Some(s) = states.get_mut(&subflow_id) {
                         s.state = "failed".to_string();
@@ -772,6 +803,12 @@ async fn handle_method_call(call: MethodCall, state: &AppState) -> String {
             }
 
             state.metrics.inc_requests();
+            tracing::info!(
+                "[信息] 查询子流程成功返回: call_id={} task_id={} output_chars={}",
+                subflow_id,
+                task_output.task_id,
+                task_output.output.chars().count()
+            );
             MethodResponse::success(&call_id, json!({
                 "result": task_output.output,
                 "task_id": task_output.task_id,
