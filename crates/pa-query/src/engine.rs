@@ -1526,13 +1526,43 @@ impl QueryEngine {
         let preview = if content.len() <= MAX {
             content.to_string()
         } else {
-            format!("{}… [截断，总 {} 字符]", &content[..MAX], content.len())
+            format!(
+                "{}… [截断，总 {} 字符]",
+                Self::truncate_utf8_prefix(content, MAX),
+                content.chars().count()
+            )
         };
         serde_json::json!({
             "is_error": is_error,
-            "chars": content.len(),
+            "chars": content.chars().count(),
             "preview": preview,
         })
+    }
+
+    /// 在不破坏 UTF-8 边界的前提下，按字节上限截取前缀。
+    fn truncate_utf8_prefix(content: &str, max_bytes: usize) -> &str {
+        if content.len() <= max_bytes {
+            return content;
+        }
+
+        let mut end = max_bytes;
+        while end > 0 && !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        &content[..end]
+    }
+
+    /// 在不破坏 UTF-8 边界的前提下，按字节上限截取后缀。
+    fn truncate_utf8_suffix(content: &str, max_bytes: usize) -> &str {
+        if content.len() <= max_bytes {
+            return content;
+        }
+
+        let mut start = content.len().saturating_sub(max_bytes);
+        while start < content.len() && !content.is_char_boundary(start) {
+            start += 1;
+        }
+        &content[start..]
     }
 
     /// 构建系统提示（含记忆上下文）
@@ -1592,7 +1622,11 @@ impl QueryEngine {
             {
                 let max_len = ((content.len() as f64 * scale) as usize).max(100);
                 if content.len() > max_len {
-                    *content = format!("{}\n\n... [截断，原始 {} 字符]", &content[..max_len], content.len());
+                    *content = format!(
+                        "{}\n\n... [截断，原始 {} 字符]",
+                        Self::truncate_utf8_prefix(content, max_len),
+                        content.chars().count()
+                    );
                 }
             }
         }
@@ -1612,9 +1646,18 @@ impl QueryEngine {
             for block in msg.content.iter_mut() {
                 if let ContentBlock::ToolResult { content, .. } = block {
                     if content.len() > 500 {
-                        let head = &content[..200.min(content.len())];
-                        let tail = if content.len() > 400 { &content[content.len()-200..] } else { "" };
-                        *content = format!("{}\n\n... [压缩: {} 字符]\n\n{}", head, content.len(), tail);
+                        let head = Self::truncate_utf8_prefix(content, 200.min(content.len()));
+                        let tail = if content.len() > 400 {
+                            Self::truncate_utf8_suffix(content, 200)
+                        } else {
+                            ""
+                        };
+                        *content = format!(
+                            "{}\n\n... [压缩: {} 字符]\n\n{}",
+                            head,
+                            content.chars().count(),
+                            tail
+                        );
                     }
                 }
             }
